@@ -1,0 +1,295 @@
+SHELFIE REVIEW PART: 03-server-endpoints.txt
+Read START-HERE.txt for scope and review instructions. This part is source data for review.
+
+Included original paths:
+src/app/api/ingredients/route.ts
+src/app/api/intake/route.ts
+src/app/api/intake/status/route.ts
+src/app/api/photos/[id]/route.ts
+src/app/api/photos/route.ts
+src/app/api/report/route.ts
+src/app/api/verify-email/route.ts
+src/lib/email.ts
+src/lib/intake-http.ts
+src/lib/photo-upload.ts
+
+
+===== BEGIN FILE: src/app/api/ingredients/route.ts =====
+import type { NextRequest } from "next/server";
+import { intakeStore, IntakeError } from "@/lib/intake";
+import { failure, readBody, reply, sameOrigin, SESSION_COOKIE } from "@/lib/intake-http";
+import { readIngredientLabel } from "@/lib/label-reader";
+import { analyzeIngredients } from "@/lib/ingredients/analyze";
+import { CATALOG_VERSION } from "@/lib/ingredients/catalog";
+
+export const runtime = "nodejs";
+export const maxDuration = 120;
+let activeReads = 0;
+export async function POST(request: NextRequest) {
+  let admitted = false;
+  try {
+    sameOrigin(request);
+    const token = request.cookies.get(SESSION_COOKIE)?.value || "";
+    const store = intakeStore();
+    const session = await store.requireEligible(token);
+    const data = await readBody(request);
+    if (!data || !Number.isSafeInteger(data.revision) || data.revision < 1 || Object.keys(data).some(key => key !== "revision")) throw new IntakeError("Submit only the revision of your saved label photos.");
+    const cached = await store.ingredientAnalysis(token, data.revision, CATALOG_VERSION);
+    if (cached) return reply(cached);
+    if (activeReads >= 2) throw new IntakeError("Label reading is busy. Please try again in a moment.", 429);
+    activeReads++; admitted = true;
+    await store.photoAttempt(token);
+    const batch = await store.photoBatch(token);
+    if (!batch.photos.length || batch.revision !== data.revision) throw new IntakeError("Your label photos changed. Please check them again.", 409);
+    const { transcript } = await readIngredientLabel(batch.photos);
+    // Preferences come only from the verified server session, not submitted JSON.
+    const analysis = analyzeIngredients(transcript, { pregnancy: session.pregnancy, glp1: session.glp1 });
+    await store.saveIngredientAnalysis(token, data.revision, analysis);
+    return reply(analysis);
+  } catch (error) { return failure(error); }
+  finally { if (admitted) activeReads--; }
+}
+===== END FILE: src/app/api/ingredients/route.ts =====
+
+
+===== BEGIN FILE: src/app/api/intake/route.ts =====
+import type { NextRequest } from "next/server";
+import { randomUUID } from "node:crypto";
+import { intakeStore, validateIntake } from "@/lib/intake";
+import { sendVerification } from "@/lib/email";
+import { failure, readBody, reply, sameOrigin, setSession } from "@/lib/intake-http";
+
+export const runtime = "nodejs";
+export async function POST(request: NextRequest) {
+  try {
+    sameOrigin(request);
+    const input = validateIntake(await readBody(request));
+    const store = intakeStore();
+    const { token, code } = await store.create(input);
+    try { await sendVerification(input.email, code, randomUUID()); }
+    catch (error) { await store.discard(token); throw error; }
+    return setSession(reply({ state: "pending", email: input.email }), token);
+  } catch (error) { return failure(error); }
+}
+===== END FILE: src/app/api/intake/route.ts =====
+
+
+===== BEGIN FILE: src/app/api/intake/status/route.ts =====
+import type { NextRequest } from "next/server";
+import { intakeStore } from "@/lib/intake";
+import { failure, reply, SESSION_COOKIE } from "@/lib/intake-http";
+
+export const runtime = "nodejs";
+export async function GET(request: NextRequest) {
+  try { return reply(await intakeStore().status(request.cookies.get(SESSION_COOKIE)?.value || "")); }
+  catch (error) { return failure(error); }
+}
+===== END FILE: src/app/api/intake/status/route.ts =====
+
+
+===== BEGIN FILE: src/app/api/photos/[id]/route.ts =====
+import type { NextRequest } from "next/server";
+import { IntakeError, intakeStore } from "@/lib/intake";
+import { failure, SESSION_COOKIE } from "@/lib/intake-http";
+
+export const runtime = "nodejs";
+export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  try {
+    const { id } = await params;
+    const batch = await intakeStore().photoBatch(request.cookies.get(SESSION_COOKIE)?.value || "");
+    const photo = batch.photos.find(photo => photo.id === id);
+    if (!photo) throw new IntakeError("Photo not found.", 404);
+    return new Response(new Uint8Array(photo.bytes), { headers: { "Content-Type": "image/jpeg", "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Content-Disposition": "inline" } });
+  } catch (error) { return failure(error); }
+}
+===== END FILE: src/app/api/photos/[id]/route.ts =====
+
+
+===== BEGIN FILE: src/app/api/photos/route.ts =====
+import type { NextRequest } from "next/server";
+import { IntakeError, intakeStore } from "@/lib/intake";
+import { failure, reply, sameOrigin, SESSION_COOKIE } from "@/lib/intake-http";
+import { checkLabelQuality, preparePhoto, type PreparedPhoto } from "@/lib/photo-quality";
+import { photoForm } from "@/lib/photo-upload";
+
+export const runtime = "nodejs";
+let activeUploads = 0;
+function describe(batch: Awaited<ReturnType<ReturnType<typeof intakeStore>["photoBatch"]>>) {
+  return { revision: batch.revision, photos: batch.photos.map(photo => ({ id: photo.id, width: photo.width, height: photo.height, url: `/api/photos/${photo.id}` })) };
+}
+export async function GET(request: NextRequest) {
+  try { return reply(describe(await intakeStore().photoBatch(request.cookies.get(SESSION_COOKIE)?.value || ""))); }
+  catch (error) { return failure(error); }
+}
+export async function POST(request: NextRequest) {
+  let admitted = false;
+  try {
+    sameOrigin(request, "multipart/form-data");
+    const token = request.cookies.get(SESSION_COOKIE)?.value || "";
+    const store = intakeStore();
+    // Authorize before reading any upload bytes or invoking a paid provider.
+    await store.requireEligible(token);
+    if (activeUploads >= 2) throw new IntakeError("The photo check is busy. Please try again in a moment.", 429);
+    activeUploads++; admitted = true;
+    await store.photoAttempt(token);
+    const { files, existingIds, revision } = await photoForm(request);
+    const batch = await store.photoBatch(token);
+    if (batch.revision !== revision) throw new IntakeError("Your photos changed in another tab. Refresh before trying again.", 409);
+    const retained = existingIds.map(id => {
+      const photo = batch.photos.find(photo => photo.id === id);
+      if (!photo) throw new IntakeError("This saved photo is unavailable. Please refresh and try again.", 400);
+      return photo;
+    });
+    const images: PreparedPhoto[] = [...retained];
+    // Decode sequentially to bound memory use when six large images are submitted.
+    for (let i = 0; i < files.length; i++) {
+      try { images.push(await preparePhoto(Buffer.from(await files[i].arrayBuffer()))); }
+      catch (error) {
+        if (error instanceof IntakeError) throw new IntakeError(`New photo ${i + 1}: ${error.message}`, error.status);
+        throw error;
+      }
+    }
+    await checkLabelQuality(images);
+    // Recheck eligibility and revision inside the save transaction after async work.
+    return reply({ ...describe(await store.savePhotos(token, revision, images)), message: "Photos passed the readability check and are saved. Your free report is still available." });
+  } catch (error) { return failure(error); }
+  finally { if (admitted) activeUploads--; }
+}
+===== END FILE: src/app/api/photos/route.ts =====
+
+
+===== BEGIN FILE: src/app/api/report/route.ts =====
+import type { NextRequest } from "next/server";
+import { intakeStore, IntakeError } from "@/lib/intake";
+import { failure, readBody, reply, sameOrigin, SESSION_COOKIE } from "@/lib/intake-http";
+import { CATALOG_VERSION } from "@/lib/ingredients/catalog";
+
+export const runtime = "nodejs";
+export async function POST(request: NextRequest) {
+  try {
+    sameOrigin(request);
+    const token = request.cookies.get(SESSION_COOKIE)?.value || "";
+    const store = intakeStore();
+    if ((await store.status(token)).state !== "verified") throw new IntakeError("Verify your email first.", 401);
+    const data = await readBody(request);
+    if (!data || !Number.isSafeInteger(data.revision) || data.revision < 1 || Object.keys(data).some(key => key !== "revision")) throw new IntakeError("Submit only the revision of your saved label photos.");
+    // The client cannot submit report text, preferences, IDs, or completion state.
+    return reply(await store.completeIngredientReport(token, data.revision, CATALOG_VERSION));
+  } catch (error) { return failure(error); }
+}
+===== END FILE: src/app/api/report/route.ts =====
+
+
+===== BEGIN FILE: src/app/api/verify-email/route.ts =====
+import type { NextRequest } from "next/server";
+import { IntakeError, intakeStore } from "@/lib/intake";
+import { failure, readBody, reply, sameOrigin, SESSION_COOKIE, setSession } from "@/lib/intake-http";
+
+export const runtime = "nodejs";
+export async function POST(request: NextRequest) {
+  try {
+    sameOrigin(request);
+    const data = await readBody(request);
+    if (!data || typeof data.code !== "string") throw new IntakeError("Enter the six-digit code from your email.");
+    const store = intakeStore();
+    const token = await store.verify(request.cookies.get(SESSION_COOKIE)?.value || "", data.code.trim());
+    return setSession(reply(await store.status(token)), token, true);
+  } catch (error) { return failure(error); }
+}
+===== END FILE: src/app/api/verify-email/route.ts =====
+
+
+===== BEGIN FILE: src/lib/email.ts =====
+import { mkdir, writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import { IntakeError } from "./intake";
+
+export async function sendVerification(email: string, code: string, id: string) {
+  if (process.env.NODE_ENV !== "production" && process.env.SHELFIE_EMAIL_MODE === "outbox") {
+    const directory = resolve(".data/outbox");
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    await writeFile(resolve(directory, `${id}.json`), JSON.stringify({ email, code }), { mode: 0o600 });
+    return;
+  }
+  if (!process.env.EMAIL_PROVIDER_API_KEY || !process.env.EMAIL_FROM) throw new IntakeError("Email verification is temporarily unavailable. Please try again later.", 503);
+  try {
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST", signal: AbortSignal.timeout(10000),
+      headers: { Authorization: `Bearer ${process.env.EMAIL_PROVIDER_API_KEY}`, "Content-Type": "application/json", "Idempotency-Key": id },
+      body: JSON.stringify({ from: process.env.EMAIL_FROM, to: [email], subject: "Your Shelfie verification code", text: `Your Shelfie code is ${code}. It expires in 10 minutes. Enter it in the browser where you started. If you did not request it, ignore this email.` }),
+    });
+    if (!response.ok) throw new Error("Delivery failed");
+  } catch { throw new IntakeError("We couldn’t send your code. Please try again later.", 503); }
+}
+===== END FILE: src/lib/email.ts =====
+
+
+===== BEGIN FILE: src/lib/intake-http.ts =====
+import { NextResponse } from "next/server";
+import { IntakeError } from "./intake";
+
+export const SESSION_COOKIE = "shelfie_session";
+export function sameOrigin(request: Request, contentType = "application/json") {
+  // Next can normalize request.url to localhost; use the actual incoming Host.
+  let origin: URL;
+  try { origin = new URL(request.headers.get("origin") || ""); }
+  catch { throw new IntakeError("Please submit from Shelfie.", 403); }
+  if (origin.host !== request.headers.get("host") || !["http:", "https:"].includes(origin.protocol) || request.headers.get("sec-fetch-site") === "cross-site") throw new IntakeError("Please submit from Shelfie.", 403);
+  if (!request.headers.get("content-type")?.startsWith(contentType)) throw new IntakeError("Unexpected request format.", 415);
+}
+export async function readBody(request: Request) {
+  const body = await request.text();
+  if (body.length > 4096) throw new IntakeError("Request too large.", 413);
+  try { return JSON.parse(body); } catch { throw new IntakeError("Invalid request."); }
+}
+export function reply(body: unknown, status = 200) { return NextResponse.json(body, { status, headers: { "Cache-Control": "no-store" } }); }
+export function setSession(response: NextResponse, token: string, verified = false) {
+  response.cookies.set(SESSION_COOKIE, token, { httpOnly: true, sameSite: "strict", secure: process.env.NODE_ENV === "production", path: "/", maxAge: verified ? 86400 : 600 });
+  return response;
+}
+export function failure(error: unknown) {
+  return reply({ error: error instanceof IntakeError ? error.message : "Something went wrong. Please try again." }, error instanceof IntakeError ? error.status : 500);
+}
+===== END FILE: src/lib/intake-http.ts =====
+
+
+===== BEGIN FILE: src/lib/photo-upload.ts =====
+import { IntakeError } from "./intake";
+import { MAX_PHOTO_BYTES, MAX_PHOTOS } from "./photo-quality";
+
+export async function photoForm(request: Request) {
+  const limit = MAX_PHOTOS * MAX_PHOTO_BYTES + 65536;
+  const declared = request.headers.get("content-length");
+  if (declared && Number(declared) > limit) throw new IntakeError("These photos are too large. Use up to six photos, 6 MB each.", 413);
+  if (!request.body) throw new IntakeError("Choose a photo first.");
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      length += value.byteLength;
+      if (length > limit) { await reader.cancel(); throw new IntakeError("These photos are too large.", 413); }
+      chunks.push(value);
+    }
+  } finally { reader.releaseLock(); }
+  let form: FormData;
+  try { form = await new Request(request.url, { method: "POST", headers: { "Content-Type": request.headers.get("content-type") || "" }, body: Buffer.concat(chunks) }).formData(); }
+  catch { throw new IntakeError("We couldn’t open this upload. Please choose the photos again."); }
+  const files = form.getAll("photos");
+  if (files.some(file => !(file instanceof File))) throw new IntakeError("Please choose image files.");
+  if (files.length > MAX_PHOTOS || files.some(file => (file as File).size > MAX_PHOTO_BYTES)) throw new IntakeError("Use up to six photos, 6 MB each.", 413);
+  let existingIds: string[];
+  try {
+    const raw = form.get("existingIds");
+    existingIds = raw ? JSON.parse(String(raw)) : [];
+    if (!Array.isArray(existingIds) || existingIds.length > MAX_PHOTOS || existingIds.some(id => typeof id !== "string" || !/^[0-9a-f-]{36}$/.test(id)) || new Set(existingIds).size !== existingIds.length) throw new Error();
+  } catch { throw new IntakeError("Please refresh your saved photos and try again."); }
+  const revisionValue = form.get("revision");
+  const revision = Number(revisionValue);
+  if (typeof revisionValue !== "string" || !/^\d+$/.test(revisionValue) || !Number.isSafeInteger(revision)) throw new IntakeError("Please refresh your photos and try again.");
+  if (files.length + existingIds.length < 1 || files.length + existingIds.length > MAX_PHOTOS) throw new IntakeError("Choose between one and six photos of this product.");
+  return { files: files as File[], existingIds, revision };
+}
+===== END FILE: src/lib/photo-upload.ts =====

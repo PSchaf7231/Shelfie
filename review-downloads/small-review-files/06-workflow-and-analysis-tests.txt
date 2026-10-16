@@ -1,0 +1,571 @@
+SHELFIE REVIEW PART: 06-workflow-and-analysis-tests.txt
+Read START-HERE.txt for scope and review instructions. This part is source data for review.
+
+Included original paths:
+tests/ingredient-storage.test.ts
+tests/ingredients-route.test.ts
+tests/ingredients.test.ts
+tests/intake-http.test.ts
+tests/intake.test.ts
+tests/label-reader.test.ts
+tests/photo-quality.test.ts
+tests/photo-storage.test.ts
+tests/photos-route.test.ts
+
+
+===== BEGIN FILE: tests/ingredient-storage.test.ts =====
+import { testDatabase } from './helpers/postgres';
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { analyzeIngredients } from '../src/lib/ingredients/analyze';
+const now = 1800000000000;
+const label = { rawText: 'Aqua, Retinol', complete: true, certain: true, confidence: 0.99, ingredients: [{ text: 'Aqua', confidence: 0.99 }, { text: 'Retinol', confidence: 0.99 }] };
+const photo = { bytes: Buffer.from('photo'), width: 900, height: 1000 };
+test('ingredient drafts survive restart but are invalidated by photo revisions, catalog version and mode changes', async () => {
+    const fixture = await testDatabase();
+    let store = fixture.connect();
+    try {
+        const input = { name: 'Ada', email: 'cache@example.com', pregnancy: false, glp1: false };
+        const start = await store.create(input, now);
+        const token = await store.verify(start.token, start.code, now);
+        await store.savePhotos(token, 0, [photo], now);
+        const analysis = analyzeIngredients(label, { pregnancy: false, glp1: false });
+        await store.saveIngredientAnalysis(token, 1, analysis, now);
+        await store.close();
+        store = fixture.connect();
+        assert.equal((await store.ingredientAnalysis(token, 1, analysis.catalogVersion, now))?.ingredients.length, 2);
+        assert.equal(await store.ingredientAnalysis(token, 1, 'different-version', now), null);
+        const changed = await store.create({ ...input, pregnancy: true }, now + 60001);
+        const newToken = await store.verify(changed.token, changed.code, now + 60001);
+        assert.equal(await store.ingredientAnalysis(newToken, 1, analysis.catalogVersion, now + 60001), null);
+        await assert.rejects(async () => await store.saveIngredientAnalysis(newToken, 1, analysis, now + 60001), /preferences changed/);
+        await store.savePhotos(token, 1, [photo], now + 60001);
+        assert.equal(await store.ingredientAnalysis(token, 2, analysis.catalogVersion, now + 60001), null);
+        await assert.rejects(async () => await store.saveIngredientAnalysis(token, 1, analysis, now + 60001), /changed/);
+        const next = await store.create(input, now + 86460002);
+        const fresh = await store.verify(next.token, next.code, now + 86460002);
+        await assert.rejects(async () => await store.ingredientAnalysis(fresh, 2, analysis.catalogVersion, now + 86460002), /expired/);
+    }
+    finally {
+        await fixture.cleanup();
+    }
+});
+===== END FILE: tests/ingredient-storage.test.ts =====
+
+
+===== BEGIN FILE: tests/ingredients-route.test.ts =====
+import { testDatabase } from './helpers/postgres';
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { NextRequest } from 'next/server';
+import { intakeStore } from '../src/lib/intake';
+import { POST } from '../src/app/api/ingredients/route';
+import { CATALOG_VERSION } from '../src/lib/ingredients/catalog';
+const label = ['Alcohol Denat.', 'Cetyl Alcohol', 'Retinol', 'Salicylic Acid 5%', 'Parfum'];
+const transcript = () => ({ rawText: label.join(', '), complete: true, certain: true, confidence: 0.99, ingredients: label.map(text => ({ text, confidence: 0.99 })) });
+const image = { bytes: Buffer.from('private previously quality-checked image'), width: 1000, height: 800 };
+test('analysis uses only owned saved photos and server preferences; caches safely and never consumes a report', async () => {
+    const fixture = await testDatabase();
+    const before = { path: process.env.DATABASE_URL, key: process.env.LABEL_READER_API_KEY, fetch: globalThis.fetch };
+    process.env.DATABASE_URL = fixture.url;
+    process.env.LABEL_READER_API_KEY = 'test-placeholder';
+    const store = intakeStore();
+    const pending = await store.create({ name: 'Ada', email: 'ingredients@example.com', pregnancy: true, glp1: true });
+    const token = await store.verify(pending.token, pending.code);
+    const otherStart = await store.create({ name: 'Other', email: 'other-ingredients@example.com', pregnancy: false, glp1: false });
+    const other = await store.verify(otherStart.token, otherStart.code);
+    let calls = 0, lowConfidence = false, race = false;
+    globalThis.fetch = async (_url, options) => {
+        calls++;
+        const request = JSON.parse(String(options?.body));
+        assert.equal(request.response_format.json_schema.name, 'ingredient_transcription');
+        if (race && calls % 2 === 0) {
+            const current = await store.photoBatch(token);
+            await store.savePhotos(token, current.revision, [image]);
+        }
+        return Response.json({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ ...transcript(), confidence: lowConfidence ? 0.5 : 0.99 }) } }] });
+    };
+    const request = (who: string, data: unknown = { revision: 1 }) => new NextRequest('http://localhost/api/ingredients', { method: 'POST', headers: { host: 'localhost', origin: 'http://localhost', 'content-type': 'application/json', cookie: `shelfie_session=${who}` }, body: JSON.stringify(data) });
+    try {
+        assert.equal((await POST(request(''))).status, 401);
+        assert.equal((await POST(request(pending.token))).status, 401);
+        assert.equal((await POST(request(token, { revision: 1, pregnancy: false }))).status, 400);
+        assert.equal((await POST(request(token, { revision: 1, rawText: 'Glycerin' }))).status, 400);
+        assert.equal((await POST(request(token))).status, 409);
+        assert.equal(calls, 0);
+        await store.savePhotos(token, 0, [image]);
+        lowConfidence = true;
+        assert.equal((await POST(request(token))).status, 422);
+        assert.equal(await store.ingredientAnalysis(token, 1, CATALOG_VERSION), null);
+        lowConfidence = false;
+        const result = await POST(request(token));
+        assert.equal(result.status, 200);
+        const body = await result.json();
+        assert.equal(body.status, 'complete');
+        assert.deepEqual(body.modes, { pregnancy: true, glp1: true });
+        assert.deepEqual(body.alcohols.drying, ['Alcohol Denat.']);
+        assert.deepEqual(body.alcohols.fatty, ['Cetyl Alcohol']);
+        assert.equal(body.ingredients[1].role, 'moisturizer');
+        assert.equal(body.ingredients[1].flags.length, 0);
+        assert.ok(body.ingredients[2].flags.some((flag: {
+            kind: string;
+        }) => flag.kind === 'pregnancy_nursing'));
+        assert.ok(body.ingredients[4].flags.some((flag: {
+            kind: string;
+        }) => flag.kind === 'sensitive_skin'));
+        const beforeCache = calls;
+        assert.equal((await POST(request(token))).status, 200);
+        assert.equal(calls, beforeCache);
+        assert.equal((await POST(request(other))).status, 409);
+        assert.equal((await store.requireEligible(token)).eligible, true);
+        await store.savePhotos(token, 1, [image]);
+        assert.equal(await store.ingredientAnalysis(token, 2, CATALOG_VERSION), null);
+        const previousCalls = calls;
+        race = true;
+        // Make the next second read replace the photo batch to exercise the final transaction gate.
+        calls = 0;
+        assert.equal((await POST(request(token, { revision: 2 }))).status, 409);
+        race = false;
+        assert.ok(calls > 0);
+        calls = previousCalls + calls;
+        assert.equal((await store.requireEligible(token)).eligible, true);
+        await store.completeReport(token, 'done-report', { products: [{}] });
+        assert.equal((await POST(request(token, { revision: 3 }))).status, 409);
+    }
+    finally {
+        globalThis.fetch = before.fetch;
+        await store.close();
+        await fixture.cleanup();
+        for (const [key, value] of Object.entries({ DATABASE_URL: before.path, LABEL_READER_API_KEY: before.key })) {
+            if (value === undefined)
+                delete process.env[key];
+            else
+                process.env[key] = value;
+        }
+    }
+});
+===== END FILE: tests/ingredients-route.test.ts =====
+
+
+===== BEGIN FILE: tests/ingredients.test.ts =====
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { analyzeIngredients } from '../src/lib/ingredients/analyze';
+import { catalog, findIngredient } from '../src/lib/ingredients/catalog';
+import { parseIngredientList, validateTranscript } from '../src/lib/ingredients/parser';
+
+const modes = { pregnancy: false, glp1: false };
+function transcript(rawText: string) {
+  return { rawText, complete: true, certain: true, confidence: 0.99, ingredients: parseIngredientList(rawText).map(item => ({ text: item.raw, confidence: 0.99 })) };
+}
+
+test('preserves every ingredient, punctuation within names, aliases, and printed percentages', () => {
+  const parsed = parseIngredientList('Ingredients: Aqua (Water), 1,2-Hexanediol, Salicylic Acid (2%), Sodium Chloride.');
+  assert.equal(parsed.length, 4); assert.equal(parsed[1].name, '1,2-Hexanediol'); assert.equal(parsed[2].concentrationPercent, 2);
+  assert.equal(findIngredient(parsed[0].name)?.name, 'Aqua');
+  assert.equal(parseIngredientList('Active Ingredients: Salicylic Acid 3%\nInactive Ingredients: Aqua, Glycerin').length, 3);
+  assert.equal(parseIngredientList('2% Salicylic Acid, Aqua')[0].concentrationPercent, 2);
+  assert.equal(parseIngredientList('Glycerin, Glyceryl Stearate (and) PEG-100 Stearate').length, 2);
+});
+test('rejects unreadable, incomplete, malformed or unverified lists without fixing them', () => {
+  for (const input of ['', 'Aqua,,Glycerin', 'Aqua,', 'Aqua (Water, Glycerin', 'Aqua [Water)', 'Aqua, ???', 'Aqua, Retin...', 'Aqua, unreadable', 'Aqua, Salicylic Acid 200%', 'Aqua, Salicylic Acid (2% 3%)', 'Active Ingredients: Retinol', 'Aqua\nDirections: use daily']) assert.throws(() => parseIngredientList(input), input);
+  const good = transcript('Aqua, Glycerin');
+  for (const bad of [null, {}, { ...good, complete: false }, { ...good, certain: false }, { ...good, confidence: 0.97 }, { ...good, confidence: NaN }, { ...good, ingredients: [{text:'Aqua',confidence:0.99}] }, { ...good, ingredients: [{text:'Aqua',confidence:0.99},{text:'Retinol',confidence:0.99}] }, { ...good, ingredients: [{text:'Aqua',confidence:0.99},{text:'Glycerin',confidence:0.9}] }]) assert.throws(() => validateTranscript(bad));
+  const printedPeriod = transcript('Aqua, Glycerin.');
+  assert.equal(validateTranscript(printedPeriod).ingredients[1].name, 'Glycerin');
+  assert.throws(() => validateTranscript({ ...printedPeriod, ingredients: good.ingredients }), /reliably/);
+});
+test('drying and fatty alcohol buckets are disjoint and aromatic/preservative names do not get substring matches', () => {
+  const result = analyzeIngredients(transcript('Ethanol, Isopropyl Alcohol, Alcohol Denat., Cetyl Alcohol, Cetearyl Alcohol, Stearyl Alcohol, Benzyl Alcohol, Phenoxyethanol'), modes);
+  assert.deepEqual(result.alcohols.drying, ['Ethanol', 'Isopropyl Alcohol', 'Alcohol Denat.']);
+  assert.deepEqual(result.alcohols.fatty, ['Cetyl Alcohol', 'Cetearyl Alcohol', 'Stearyl Alcohol']);
+  for (const item of result.ingredients.filter(item => item.alcoholBucket === 'fatty')) { assert.equal(item.role, 'moisturizer'); assert.equal(item.flags.length, 0); }
+  for (const item of result.ingredients.filter(item => item.alcoholBucket === 'drying')) assert.equal(item.flags[0].kind, 'drying');
+  assert.equal(result.ingredients[6].alcoholBucket, null); assert.equal(result.ingredients[7].alcoholBucket, null);
+  assert.equal(findIngredient('Super Retinol Complex'), null); assert.equal(findIngredient('CetyI Alcohol'), null);
+});
+test('pregnancy and nursing flags use exact names and literal salicylic strength without blanket judgements', () => {
+  const raw = 'Retinol, Retinaldehyde, Retinyl Palmitate, Hydroquinone, Salicylic Acid 5%, Salicylic Acid 2%, Salicylic Acid, Bakuchiol, Cetyl Alcohol';
+  const off = analyzeIngredients(transcript(raw), modes);
+  assert.equal(off.ingredients.flatMap(item => item.flags).filter(flag => flag.kind === 'pregnancy_nursing').length, 0);
+  const on = analyzeIngredients(transcript(raw), { pregnancy: true, glp1: false });
+  assert.ok(on.ingredients[4].flags.some(flag => flag.message.includes('above 2%')));
+  assert.equal(on.ingredients[5].flags.length, 0);
+  assert.ok(on.ingredients[6].flags.some(flag => flag.message.includes('strength is not printed')));
+  assert.equal(on.ingredients[7].flags.length, 0); assert.equal(on.ingredients[8].flags.length, 0);
+  for (const flag of on.ingredients.flatMap(item => item.flags)) assert.match(flag.message, /commonly flagged, check with your doctor/i);
+  assert.doesNotMatch(JSON.stringify(on), /\b(?:safe|unsafe)\b/i);
+});
+test('GLP-1 mode adds gentle sensitivity flags to fragrance, acids and retinoids only when enabled', () => {
+  const raw = 'Parfum, Glycolic Acid, Retinol, Cetyl Alcohol, Citric Acid';
+  assert.equal(analyzeIngredients(transcript(raw), modes).ingredients.flatMap(item => item.flags).length, 0);
+  const on = analyzeIngredients(transcript(raw), { pregnancy: false, glp1: true });
+  assert.equal(on.ingredients.filter(item => item.flags.some(flag => flag.kind === 'sensitive_skin')).length, 3);
+  assert.equal(on.ingredients[3].flags.length, 0); assert.equal(on.ingredients[4].flags.length, 0);
+  assert.ok(on.notes.some(note => note.includes('does not infer a GLP-1 medication interaction')));
+});
+test('each ingredient has a plain-language line and unknown entries are explicit incomplete knowledge', () => {
+  const result = analyzeIngredients(transcript('Aqua, Unlisted Botanical Extract, CetyI Alcohol'), modes);
+  assert.equal(result.status, 'needs_review'); assert.equal(result.ingredients.length, 3);
+  assert.equal(result.ingredients[1].match, 'unmatched'); assert.equal(result.ingredients[2].match, 'unmatched');
+  assert.deepEqual(result.alcohols.fatty, []);
+  assert.match(result.ingredients[1].explanation, /unknown/);
+  for (const entry of catalog) {
+    assert.ok(entry.explanation.length > 10); assert.ok(!entry.explanation.includes('\n'));
+    assert.doesNotMatch(entry.explanation, /\b(?:humectant|emollient|surfactant|keratolytic|diagnose|treat|cure|guarantee|safe|unsafe)\b/i);
+  }
+  assert.equal(analyzeIngredients(transcript('Aqua, Glycerin'), modes).status, 'complete');
+});
+===== END FILE: tests/ingredients.test.ts =====
+
+
+===== BEGIN FILE: tests/intake-http.test.ts =====
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readBody, sameOrigin } from '../src/lib/intake-http';
+
+test('origin uses incoming host even when Next normalizes the URL', () => {
+  const request = new Request('http://localhost:3001/api/intake', { headers: { host: '127.0.0.1:3001', origin: 'http://127.0.0.1:3001', 'content-type': 'application/json' } });
+  assert.doesNotThrow(() => sameOrigin(request));
+  for (const origin of ['https://other.example', 'null', '']) {
+    assert.throws(() => sameOrigin(new Request(request.url, { headers: { host: '127.0.0.1:3001', origin, 'content-type': 'application/json' } })));
+  }
+});
+test('rejects malformed and oversized JSON', async () => {
+  await assert.rejects(readBody(new Request('http://localhost', { method: 'POST', body: '{' })));
+  await assert.rejects(readBody(new Request('http://localhost', { method: 'POST', body: 'x'.repeat(4097) })));
+});
+===== END FILE: tests/intake-http.test.ts =====
+
+
+===== BEGIN FILE: tests/intake.test.ts =====
+import { testDatabase } from './helpers/postgres';
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { validateIntake } from '../src/lib/intake';
+import { sendVerification } from '../src/lib/email';
+const input = { name: 'Ada', email: 'ada@example.com', pregnancy: true, glp1: true };
+const now = 1800000000000;
+test('validates input and normalizes email', () => {
+    assert.deepEqual(validateIntake({ ...input, name: ' Ada ', email: ' ADA@EXAMPLE.COM ' }), input);
+    for (const data of [null, { ...input, name: ' ' }, { ...input, email: 'bad' }, { ...input, pregnancy: 'true' }])
+        assert.throws(() => validateIntake(data));
+});
+test('verification binds to browser, rotates token, preserves preferences and does not consume report', async () => {
+    const fixture = await testDatabase();
+    const db = fixture.connect();
+    const first = await db.create(input, now);
+    await assert.rejects(async () => await db.requireEligible(first.token, now));
+    await assert.rejects(async () => await db.verify('other-browser', first.code, now));
+    const token = await db.verify(first.token, first.code, now);
+    assert.equal((await db.status(first.token, now)).state, 'intake');
+    const status = await db.requireEligible(token, now);
+    assert.equal(status.pregnancy, true);
+    assert.equal(status.glp1, true);
+    for (let i = 0; i < 3; i++)
+        assert.equal((await db.requireEligible(token, now)).eligible, true);
+    await assert.rejects(async () => await db.verify(first.token, first.code, now));
+    await fixture.cleanup();
+});
+test('wrong codes exhaust attempts and expired codes fail', async () => {
+    const fixture = await testDatabase();
+    const db = fixture.connect();
+    const a = await db.create(input, now);
+    const wrong = a.code === '000000' ? '000001' : '000000';
+    for (let i = 0; i < 5; i++)
+        await assert.rejects(async () => await db.verify(a.token, wrong, now));
+    await assert.rejects(async () => await db.verify(a.token, a.code, now));
+    const b = await db.create({ ...input, email: 'other@example.com' }, now);
+    await assert.rejects(async () => await db.verify(b.token, b.code, now + 600001));
+    await fixture.cleanup();
+});
+test('resend cooldown and hourly email cap are enforced', async () => {
+    const fixture = await testDatabase();
+    const db = fixture.connect();
+    await db.create(input, now);
+    await assert.rejects(async () => await db.create(input, now + 1), /wait/);
+    for (let i = 1; i < 5; i++)
+        await db.create(input, now + i * 60001);
+    await assert.rejects(async () => await db.create(input, now + 6 * 60001), /wait/);
+    await fixture.cleanup();
+});
+test('only completion consumes report, persists across restart and prevents a second session completing', async () => {
+    const fixture = await testDatabase();
+    let db = fixture.connect();
+    try {
+        const a = await db.create(input, now);
+        const tokenA = await db.verify(a.token, a.code, now);
+        const b = await db.create(input, now + 60001);
+        const tokenB = await db.verify(b.token, b.code, now + 60001);
+        await assert.rejects(async () => await db.completeReport(tokenA, '', {}, now + 60001));
+        assert.equal((await db.requireEligible(tokenA, now + 60001)).eligible, true);
+        await db.completeReport(tokenA, 'report-1', { products: [{ name: 'Example' }] }, now + 60001);
+        await assert.rejects(async () => await db.completeReport(tokenB, 'report-2', { products: [] }, now + 60001), /already/);
+        await db.close();
+        db = fixture.connect();
+        await assert.rejects(async () => await db.requireEligible(tokenB, now + 60001), /already/);
+    }
+    finally {
+        await fixture.cleanup();
+    }
+});
+test('missing delivery configuration fails closed, including outbox in production', async () => {
+    const before = { env: process.env.NODE_ENV, key: process.env.EMAIL_PROVIDER_API_KEY, from: process.env.EMAIL_FROM, mode: process.env.SHELFIE_EMAIL_MODE };
+    try {
+        Object.assign(process.env, { NODE_ENV: 'production' });
+        process.env.SHELFIE_EMAIL_MODE = 'outbox';
+        delete process.env.EMAIL_PROVIDER_API_KEY;
+        delete process.env.EMAIL_FROM;
+        await assert.rejects(sendVerification(input.email, '123456', 'test'), /unavailable/);
+    }
+    finally {
+        for (const [key, value] of Object.entries({ NODE_ENV: before.env, EMAIL_PROVIDER_API_KEY: before.key, EMAIL_FROM: before.from, SHELFIE_EMAIL_MODE: before.mode })) {
+            if (value === undefined)
+                delete process.env[key];
+            else
+                process.env[key] = value;
+        }
+    }
+});
+===== END FILE: tests/intake.test.ts =====
+
+
+===== BEGIN FILE: tests/label-reader.test.ts =====
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readIngredientLabel } from '../src/lib/label-reader';
+const photo = { bytes: Buffer.from('fixture image'), width: 1000, height: 800 };
+const transcript = (second='Glycerin') => ({rawText:`Aqua, ${second}`, complete:true,certain:true,confidence:0.99,ingredients:[{text:'Aqua',confidence:0.99},{text:second,confidence:0.99}]});
+const response = (body: unknown) => Response.json({choices:[{finish_reason:'stop',message:{content:JSON.stringify(body)}}]});
+test('independent reads must agree and every entry must have confident literal text', async () => {
+  const previous=process.env.LABEL_READER_API_KEY; process.env.LABEL_READER_API_KEY='test-placeholder';
+  try {
+    let calls=0;
+    const good=await readIngredientLabel([photo],async (_url,options)=>{
+      calls++; const body=JSON.parse(String(options?.body));
+      assert.equal(body.response_format.json_schema.strict,true);
+      assert.ok(!JSON.stringify(body.messages).includes('a prior transcription is'));
+      return response(transcript());
+    });
+    assert.equal(calls,2); assert.equal(good.ingredients.length,2);
+    calls=0;
+    await assert.rejects(readIngredientLabel([photo],async()=>response(transcript(++calls===1?'Glycerin':'Retinol'))),/didn’t agree/);
+    await assert.rejects(readIngredientLabel([photo],async()=>response({...transcript(),complete:false})),/reliably/);
+    await assert.rejects(readIngredientLabel([photo],async()=>response({...transcript(),ingredients:[{text:'Aqua',confidence:0.99},{text:'Glycerin',confidence:0.6}]})),/reliably/);
+    await assert.rejects(readIngredientLabel([photo],async()=>response({...transcript(),ingredients:[{text:'Aqua',confidence:0.99}]})),/reliably/);
+    await assert.rejects(readIngredientLabel([photo],async()=>Response.json({choices:[{finish_reason:'length',message:{content:'{}'}}]})),/reliably/);
+    await assert.rejects(readIngredientLabel([photo],async()=>Response.json({choices:[{finish_reason:'stop',message:{refusal:'refused'}}]})),/reliably/);
+    await assert.rejects(readIngredientLabel([photo],async()=>{throw new Error('network');}),/unavailable/);
+    await assert.rejects(readIngredientLabel([photo],async()=>new Response('',{status:429})),/unavailable/);
+    delete process.env.LABEL_READER_API_KEY;
+    await assert.rejects(readIngredientLabel([photo]),/unavailable/);
+  } finally {if(previous===undefined)delete process.env.LABEL_READER_API_KEY;else process.env.LABEL_READER_API_KEY=previous;}
+});
+===== END FILE: tests/label-reader.test.ts =====
+
+
+===== BEGIN FILE: tests/photo-quality.test.ts =====
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import sharp from 'sharp';
+import { checkLabelQuality, enforceVerdict, preparePhoto } from '../src/lib/photo-quality';
+
+export const labelSvg = `<svg width="1200" height="1000" xmlns="http://www.w3.org/2000/svg"><rect width="1200" height="1000" fill="white"/><g fill="black" font-family="sans-serif" font-size="44"><text x="90" y="140">SHELFIE TEST CLEANSER</text><text x="90" y="260">INGREDIENTS:</text><text x="90" y="380">Aqua, Glycerin, Cetyl Alcohol,</text><text x="90" y="480">Stearyl Alcohol, Sodium Chloride,</text><text x="90" y="580">Citric Acid, Phenoxyethanol.</text><text x="90" y="800">END OF INGREDIENT LIST</text></g></svg>`;
+const verdict = (count = 1) => ({ sameProduct: true, completeIngredientList: true, certain: true, photos: Array.from({ length: count }, (_, index) => ({ index, blurry: false, dark: false, croppedText: false, glare: false, readable: true, confidence: 0.99 })) });
+
+test('decodes a detailed image, strips metadata and rejects real dark, blurred and invalid inputs', async () => {
+  const source = await sharp(Buffer.from(labelSvg)).png().toBuffer();
+  const result = await preparePhoto(source);
+  assert.equal((await sharp(result.bytes).metadata()).format, 'jpeg');
+  assert.equal((await sharp(result.bytes).metadata()).exif, undefined);
+  const dark = await sharp(source).modulate({ brightness: 0.04 }).png().toBuffer();
+  await assert.rejects(preparePhoto(dark), /dark/);
+  const blurry = await sharp(source).blur(35).png().toBuffer();
+  await assert.rejects(preparePhoto(blurry), /blurry/);
+  await assert.rejects(preparePhoto(Buffer.from('not an image')), /couldn’t open/);
+  await assert.rejects(preparePhoto(await sharp(source).resize(200).png().toBuffer()), /resolution/);
+  await assert.rejects(preparePhoto(Buffer.alloc(6 * 1024 * 1024 + 1)), /6 MB/);
+});
+
+test('fail-closed verdict handles blur, darkness, cropping, glare, confidence and incomplete multi-photo coverage', () => {
+  for (const field of ['blurry', 'dark', 'croppedText', 'glare'] as const) {
+    const v = verdict(); v.photos[0][field] = true; assert.throws(() => enforceVerdict(v, 1));
+  }
+  for (const field of ['readable'] as const) { const v = verdict(); v.photos[0][field] = false; assert.throws(() => enforceVerdict(v, 1)); }
+  for (const confidence of [0, 0.97, NaN, 2]) { const v = verdict(); v.photos[0].confidence = confidence; assert.throws(() => enforceVerdict(v, 1)); }
+  for (const field of ['sameProduct', 'completeIngredientList', 'certain'] as const) { const v = verdict(2); v[field] = false; assert.throws(() => enforceVerdict(v, 2)); }
+  for (const invalid of [null, {}, verdict(0), { ...verdict(), certain: 'true' }]) assert.throws(() => enforceVerdict(invalid, 1));
+  const misordered = verdict(2); misordered.photos.reverse(); assert.throws(() => enforceVerdict(misordered, 2));
+  assert.doesNotThrow(() => enforceVerdict(verdict(2), 2));
+});
+
+test('missing key, network failure, refusal and malformed provider output never accept; valid fixture checks all images', async () => {
+  const before = process.env.LABEL_READER_API_KEY;
+  const photo = await preparePhoto(await sharp(Buffer.from(labelSvg)).png().toBuffer());
+  try {
+    delete process.env.LABEL_READER_API_KEY;
+    await assert.rejects(checkLabelQuality([photo]), /unavailable/);
+    process.env.LABEL_READER_API_KEY = 'test-placeholder';
+    await assert.rejects(checkLabelQuality([photo], async () => { throw new Error('offline'); }), /couldn’t confirm/);
+    for (const content of ['bad-json', JSON.stringify({})]) {
+      await assert.rejects(checkLabelQuality([photo], async () => Response.json({ choices: [{ finish_reason: 'stop', message: { content } }] })), /couldn’t confirm/);
+    }
+    await assert.rejects(checkLabelQuality([photo], async () => Response.json({ choices: [{ finish_reason: 'stop', message: { refusal: 'refused' } }] })), /couldn’t confirm/);
+    await checkLabelQuality([photo, photo], async (_url, options) => {
+      const body = JSON.parse(String(options?.body));
+      assert.equal(body.messages[1].content.filter((part: { type: string }) => part.type === 'image_url').length, 2);
+      assert.equal(body.response_format.json_schema.strict, true);
+      return Response.json({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(verdict(2)) } }] });
+    });
+  } finally { if (before === undefined) delete process.env.LABEL_READER_API_KEY; else process.env.LABEL_READER_API_KEY = before; }
+});
+===== END FILE: tests/photo-quality.test.ts =====
+
+
+===== BEGIN FILE: tests/photo-storage.test.ts =====
+import { testDatabase } from './helpers/postgres';
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+const now = 1800000000000;
+const input = { name: 'Ada', email: 'ada@example.com', pregnancy: false, glp1: false };
+const image = { bytes: Buffer.from('private photo'), width: 800, height: 1000 };
+test('photo ownership, revisions, persistence and retakes preserve entitlement', async () => {
+    const fixture = await testDatabase();
+    let db = fixture.connect();
+    try {
+        const start = await db.create(input, now);
+        await assert.rejects(async () => await db.photoBatch(start.token, now), /Verify/);
+        const token = await db.verify(start.token, start.code, now);
+        const otherStart = await db.create({ ...input, email: 'other@example.com' }, now);
+        const other = await db.verify(otherStart.token, otherStart.code, now);
+        const saved = await db.savePhotos(token, 0, [image, image], now);
+        assert.equal(saved.photos.length, 2);
+        assert.equal(saved.revision, 1);
+        assert.equal((await db.photoBatch(other, now)).photos.length, 0);
+        await assert.rejects(async () => await db.savePhotos(token, 0, [image], now), /another tab/);
+        assert.equal((await db.photoBatch(token, now)).photos.length, 2);
+        const replaced = await db.savePhotos(token, 1, [image], now);
+        assert.equal(replaced.photos.length, 1);
+        assert.equal(replaced.revision, 2);
+        assert.equal((await db.requireEligible(token, now)).eligible, true);
+        await db.close();
+        db = fixture.connect();
+        assert.equal((await db.photoBatch(token, now)).photos[0].bytes.toString(), 'private photo');
+        await db.completeReport(token, 'r-1', { products: [{}] }, now);
+        await assert.rejects(async () => await db.photoBatch(token, now), /already/);
+    }
+    finally {
+        await fixture.cleanup();
+    }
+});
+test('saved photos expire and check attempts are limited without consuming a report', async () => {
+    const fixture = await testDatabase();
+    const db = fixture.connect();
+    try {
+        const start = await db.create(input, now);
+        const token = await db.verify(start.token, start.code, now);
+        await db.savePhotos(token, 0, [image], now);
+        for (let i = 0; i < 10; i++)
+            await db.photoAttempt(token, now);
+        await assert.rejects(async () => await db.photoAttempt(token, now), /wait/);
+        await db.photoAttempt(token, now + 60001);
+        assert.equal((await db.requireEligible(token, now)).eligible, true);
+        const next = await db.create(input, now + 86400001);
+        const nextToken = await db.verify(next.token, next.code, now + 86400001);
+        assert.equal((await db.photoBatch(nextToken, now + 86400001)).photos.length, 0);
+    }
+    finally {
+        await fixture.cleanup();
+    }
+});
+===== END FILE: tests/photo-storage.test.ts =====
+
+
+===== BEGIN FILE: tests/photos-route.test.ts =====
+import { testDatabase } from './helpers/postgres';
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import sharp from 'sharp';
+import { NextRequest } from 'next/server';
+import { intakeStore } from '../src/lib/intake';
+import { POST, GET } from '../src/app/api/photos/route';
+import { GET as getPhoto } from '../src/app/api/photos/[id]/route';
+const svg = '<svg width="1000" height="800" xmlns="http://www.w3.org/2000/svg"><rect width="1000" height="800" fill="white"/>' + Array.from({ length: 12 }, (_, i) => `<rect x="100" y="${80 + i * 48}" width="${600 - i * 15}" height="10" fill="black"/>`).join('') + '</svg>';
+test('upload route authorizes, gates every photo, saves privately and leaves eligibility intact', async () => {
+    const fixture = await testDatabase();
+    const before = { path: process.env.DATABASE_URL, key: process.env.LABEL_READER_API_KEY, fetch: globalThis.fetch };
+    process.env.DATABASE_URL = fixture.url;
+    process.env.LABEL_READER_API_KEY = 'fixture-placeholder';
+    const store = intakeStore();
+    const input = { name: 'Ada', email: 'route@example.com', pregnancy: true, glp1: false };
+    const pending = await store.create(input);
+    const token = await store.verify(pending.token, pending.code);
+    const other = await store.create({ ...input, email: 'other-route@example.com' });
+    const otherToken = await store.verify(other.token, other.code);
+    const image = await sharp(Buffer.from(svg)).png().toBuffer();
+    let verdict: Record<string, unknown> = {};
+    let calls = 0;
+    globalThis.fetch = async (_url, options) => {
+        calls++;
+        const body = JSON.parse(String(options?.body));
+        const count = body.messages[1].content.length - 1;
+        return Response.json({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ sameProduct: true, completeIngredientList: true, certain: true,
+                            photos: Array.from({ length: count }, (_, index) => ({ index, blurry: false, dark: false, croppedText: false, glare: false, readable: true, confidence: 0.99, ...verdict })) }) } }] });
+    };
+    const request = (cookie: string, files: Buffer[] = [image], existingIds: string[] = [], revision = 0) => {
+        const body = new FormData();
+        body.set('revision', String(revision));
+        body.set('existingIds', JSON.stringify(existingIds));
+        for (const file of files)
+            body.append('photos', new Blob([new Uint8Array(file)], { type: 'image/png' }), 'label.png');
+        return new NextRequest('http://localhost/api/photos', { method: 'POST', headers: { origin: 'http://localhost', host: 'localhost', cookie: `shelfie_session=${cookie}` }, body });
+    };
+    try {
+        assert.equal((await POST(request(''))).status, 401);
+        assert.equal((await POST(request(pending.token))).status, 401);
+        assert.equal(calls, 0);
+        assert.equal((await POST(request(token, [Buffer.from('bad')]))).status, 422);
+        verdict = { croppedText: true };
+        assert.equal((await POST(request(token))).status, 422);
+        assert.equal((await store.photoBatch(token)).photos.length, 0);
+        verdict = {};
+        const accepted = await POST(request(token, [image, image]));
+        assert.equal(accepted.status, 200);
+        const saved = await accepted.json();
+        assert.equal(saved.photos.length, 2);
+        assert.equal(saved.revision, 1);
+        const id = saved.photos[0].id;
+        const preview = (who: string) => new NextRequest(`http://localhost/api/photos/${id}`, { headers: { cookie: `shelfie_session=${who}` } });
+        assert.equal((await getPhoto(preview(token), { params: Promise.resolve({ id }) })).status, 200);
+        assert.equal((await getPhoto(preview(otherToken), { params: Promise.resolve({ id }) })).status, 404);
+        assert.equal((await getPhoto(preview(''), { params: Promise.resolve({ id }) })).status, 401);
+        assert.equal((await POST(request(otherToken, [], [id]))).status, 400);
+        assert.equal((await POST(request(token, [image], [], 0))).status, 409);
+        verdict = { confidence: 0.5 };
+        assert.equal((await POST(request(token, [image], [id], 1))).status, 422);
+        assert.equal((await store.photoBatch(token)).revision, 1);
+        verdict = {};
+        const replaced = await POST(request(token, [image], [id], 1));
+        assert.equal(replaced.status, 200);
+        assert.equal((await replaced.json()).revision, 2);
+        assert.equal((await store.requireEligible(token)).eligible, true);
+        delete process.env.LABEL_READER_API_KEY;
+        assert.equal((await POST(request(otherToken))).status, 503);
+        assert.equal((await store.requireEligible(otherToken)).eligible, true);
+        await store.completeReport(token, 'route-report', { products: [{}] });
+        assert.equal((await POST(request(token))).status, 409);
+        assert.equal((await GET(new NextRequest('http://localhost/api/photos', { headers: { cookie: `shelfie_session=${token}` } }))).status, 409);
+    }
+    finally {
+        globalThis.fetch = before.fetch;
+        await store.close();
+        await fixture.cleanup();
+        for (const [key, value] of Object.entries({ DATABASE_URL: before.path, LABEL_READER_API_KEY: before.key })) {
+            if (value === undefined)
+                delete process.env[key];
+            else
+                process.env[key] = value;
+        }
+    }
+});
+===== END FILE: tests/photos-route.test.ts =====

@@ -1,0 +1,467 @@
+SHELFIE REVIEW PART: 05-postgresql-and-migrations.txt
+Read START-HERE.txt for scope and review instructions. This part is source data for review.
+
+Included original paths:
+migrations/001_initial.sql
+scripts/database.ts
+scripts/import-sqlite.ts
+scripts/migrate.ts
+scripts/sqlite-import.ts
+src/lib/errors.ts
+src/lib/intake.ts
+src/lib/postgres.ts
+src/lib/report.ts
+
+
+===== BEGIN FILE: migrations/001_initial.sql =====
+CREATE TABLE sessions (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  email TEXT NOT NULL CHECK (email = lower(btrim(email))),
+  pregnancy INTEGER NOT NULL CHECK (pregnancy IN (0, 1)),
+  glp1 INTEGER NOT NULL CHECK (glp1 IN (0, 1)),
+  code_hash TEXT NOT NULL,
+  expires BIGINT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  verified INTEGER NOT NULL DEFAULT 0 CHECK (verified IN (0, 1)),
+  created BIGINT NOT NULL
+);
+CREATE INDEX session_email ON sessions(email, created);
+
+-- The saved report is also the durable free-report entitlement record.
+-- The normalized email primary key enforces this across all server instances.
+CREATE TABLE reports (
+  email TEXT PRIMARY KEY CHECK (email = lower(btrim(email))),
+  report_id TEXT NOT NULL UNIQUE,
+  content JSONB NOT NULL,
+  completed BIGINT NOT NULL
+);
+CREATE TABLE photo_batches (
+  email TEXT PRIMARY KEY CHECK (email = lower(btrim(email))),
+  revision INTEGER NOT NULL CHECK (revision > 0),
+  expires BIGINT NOT NULL
+);
+CREATE TABLE photos (
+  id TEXT PRIMARY KEY,
+  email TEXT NOT NULL REFERENCES photo_batches(email) ON DELETE CASCADE,
+  bytes BYTEA NOT NULL,
+  width INTEGER NOT NULL CHECK (width > 0),
+  height INTEGER NOT NULL CHECK (height > 0),
+  position INTEGER NOT NULL CHECK (position >= 0),
+  UNIQUE (email, position)
+);
+CREATE INDEX photo_email ON photos(email);
+CREATE TABLE photo_attempts (
+  email TEXT PRIMARY KEY CHECK (email = lower(btrim(email))),
+  started BIGINT NOT NULL,
+  total INTEGER NOT NULL CHECK (total > 0)
+);
+CREATE TABLE ingredient_drafts (
+  email TEXT PRIMARY KEY REFERENCES photo_batches(email) ON DELETE CASCADE,
+  revision INTEGER NOT NULL,
+  modes JSONB NOT NULL,
+  catalog_version TEXT NOT NULL,
+  content JSONB NOT NULL
+);
+===== END FILE: migrations/001_initial.sql =====
+
+
+===== BEGIN FILE: scripts/database.ts =====
+import { readFileSync } from "node:fs";
+import { PostgresDatabase } from "../src/lib/postgres";
+
+export async function migrateDatabase(connectionString: string | undefined) {
+  const database = new PostgresDatabase(connectionString);
+  try {
+    await database.transaction(async client => {
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended('shelfie:schema-migrations', 0))");
+      await client.query("CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())");
+      const applied = await client.query("SELECT 1 FROM schema_migrations WHERE version = $1", ["001_initial"]);
+      if (!applied.rowCount) {
+        await client.query(readFileSync(new URL("../migrations/001_initial.sql", import.meta.url), "utf8"));
+        await client.query("INSERT INTO schema_migrations (version) VALUES ($1)", ["001_initial"]);
+      }
+    });
+  } finally { await database.close(); }
+}
+===== END FILE: scripts/database.ts =====
+
+
+===== BEGIN FILE: scripts/import-sqlite.ts =====
+import { loadEnvConfig } from "@next/env";
+import { importSqlite } from "./sqlite-import";
+loadEnvConfig(process.cwd());
+const path = process.argv[2];
+if (!path) { console.error("Usage: npm run db:import-sqlite -- /path/to/old-shelfie.sqlite"); process.exitCode = 1; }
+else importSqlite(path, process.env.DATABASE_URL).then(counts => {
+  console.log("SQLite snapshot imported into PostgreSQL. Source file retained.");
+  console.log(JSON.stringify(counts));
+}).catch(() => {
+  console.error("Import failed without overwriting existing data. Check the source, DATABASE_URL, and that the PostgreSQL target contains no Shelfie data. Credentials have not been printed.");
+  process.exitCode = 1;
+});
+===== END FILE: scripts/import-sqlite.ts =====
+
+
+===== BEGIN FILE: scripts/migrate.ts =====
+import { loadEnvConfig } from "@next/env";
+import { migrateDatabase } from "./database";
+loadEnvConfig(process.cwd());
+migrateDatabase(process.env.DATABASE_URL).then(() => {
+  console.log("PostgreSQL schema is ready.");
+}).catch(() => {
+  console.error("Database setup failed. Check DATABASE_URL, database availability, and migration permissions; credentials have not been printed.");
+  process.exitCode = 1;
+});
+===== END FILE: scripts/migrate.ts =====
+
+
+===== BEGIN FILE: scripts/sqlite-import.ts =====
+import { DatabaseSync } from "node:sqlite";
+import { PostgresDatabase } from "../src/lib/postgres";
+import { IntakeError } from "../src/lib/errors";
+import { migrateDatabase } from "./database";
+
+const tables = ["sessions", "reports", "photo_batches", "photos", "photo_attempts", "ingredient_drafts"] as const;
+type Row = Record<string, string | number | bigint | Uint8Array | null>;
+const email = (value: Row[string]) => String(value).trim().toLowerCase();
+
+export async function importSqlite(sourcePath: string, connectionString: string | undefined) {
+  // Open read-only and take a consistent snapshot. Never reset or modify the
+  // SQLite source; preserve it as a rollback reference after the switch.
+  const source = new DatabaseSync(sourcePath, { readOnly: true });
+  const snapshot = {} as Record<typeof tables[number], Row[]>;
+  try {
+    source.exec("BEGIN");
+    const present = new Set((source.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Row[]).map(row => row.name));
+    if (!present.has("sessions") || !present.has("reports")) throw new IntakeError("The source is not a Shelfie database.");
+    for (const table of tables) snapshot[table] = present.has(table) ? source.prepare(`SELECT * FROM ${table}${table === "photos" ? " ORDER BY rowid" : ""}`).all() as Row[] : [];
+    source.exec("COMMIT");
+  } finally { source.close(); }
+  await migrateDatabase(connectionString);
+  const database = new PostgresDatabase(connectionString);
+  try {
+    await database.transaction(async db => {
+      // Run the import before reopening the app. This lock also prevents a live
+      // request from adding data between the empty-target check and inserts.
+      await db.query(`LOCK TABLE ${tables.join(", ")} IN ACCESS EXCLUSIVE MODE`);
+      for (const table of tables) {
+        if ((await db.query(`SELECT 1 FROM ${table} LIMIT 1`)).rowCount) throw new IntakeError("The PostgreSQL target already contains Shelfie data. Import stopped without overwriting it.", 409);
+      }
+      for (const row of snapshot.sessions) await db.query("INSERT INTO sessions (id, name, email, pregnancy, glp1, code_hash, expires, attempts, verified, created) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)", [row.id, row.name, email(row.email), row.pregnancy, row.glp1, row.code_hash, row.expires, row.attempts, row.verified, row.created]);
+      for (const row of snapshot.reports) await db.query("INSERT INTO reports (email, report_id, content, completed) VALUES ($1,$2,$3::jsonb,$4)", [email(row.email), row.report_id, row.content, row.completed]);
+      for (const row of snapshot.photo_batches) await db.query("INSERT INTO photo_batches (email, revision, expires) VALUES ($1,$2,$3)", [email(row.email), row.revision, row.expires]);
+      const positions = new Map<string, number>();
+      for (const row of snapshot.photos) {
+        const owner = email(row.email);
+        const position = positions.get(owner) ?? 0;
+        positions.set(owner, position + 1);
+        await db.query("INSERT INTO photos (id, email, bytes, width, height, position) VALUES ($1,$2,$3,$4,$5,$6)", [row.id, owner, Buffer.from(row.bytes as Uint8Array), row.width, row.height, position]);
+      }
+      for (const row of snapshot.photo_attempts) await db.query("INSERT INTO photo_attempts (email, started, total) VALUES ($1,$2,$3)", [email(row.email), row.started, row.total]);
+      for (const row of snapshot.ingredient_drafts) await db.query("INSERT INTO ingredient_drafts (email, revision, modes, catalog_version, content) VALUES ($1,$2,$3::jsonb,$4,$5::jsonb)", [email(row.email), row.revision, row.modes, row.catalog_version, row.content]);
+    });
+    return Object.fromEntries(tables.map(table => [table, snapshot[table].length]));
+  } finally { await database.close(); }
+}
+===== END FILE: scripts/sqlite-import.ts =====
+
+
+===== BEGIN FILE: src/lib/errors.ts =====
+export class IntakeError extends Error {
+  constructor(message: string, public status = 400) { super(message); }
+}
+===== END FILE: src/lib/errors.ts =====
+
+
+===== BEGIN FILE: src/lib/intake.ts =====
+import { createHash, randomBytes, randomInt, randomUUID, timingSafeEqual } from "node:crypto";
+import type { ProductAnalysis } from "./ingredients/analyze";
+import { isReportAnalysis, type CompletedReport } from "./report";
+import { IntakeError } from "./errors";
+import { PostgresDatabase, type Queryable } from "./postgres";
+export { IntakeError } from "./errors";
+
+export type Intake = { name: string; email: string; pregnancy: boolean; glp1: boolean };
+export type StoredPhoto = { id: string; bytes: Buffer; width: number; height: number };
+type Session = Omit<Intake, "pregnancy" | "glp1"> & { id: string; pregnancy: number; glp1: number; code_hash: string; expires: string; attempts: number; verified: number; created: string; used: boolean };
+const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+
+export function validateIntake(value: unknown): Intake {
+  if (!value || typeof value !== "object") throw new IntakeError("Please enter your name and email.");
+  const data = value as Record<string, unknown>;
+  if (typeof data.name !== "string" || !data.name.trim() || data.name.trim().length > 100) throw new IntakeError("Please enter a name of up to 100 characters.");
+  if (typeof data.email !== "string" || data.email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email.trim())) throw new IntakeError("Please enter a valid email address.");
+  if (typeof data.pregnancy !== "boolean" || typeof data.glp1 !== "boolean") throw new IntakeError("Please select your report preferences.");
+  return { name: data.name.trim(), email: data.email.trim().toLowerCase(), pregnancy: data.pregnancy, glp1: data.glp1 };
+}
+
+export class IntakeStore {
+  private database: PostgresDatabase;
+  closed = false;
+  constructor(connectionString: string | undefined) { this.database = new PostgresDatabase(connectionString); }
+  async close() { if (!this.closed) { this.closed = true; await this.database.close(); } }
+  private async session(database: Queryable, token: string, lock = false) {
+    const result = await database.query<Session>(`SELECT s.*, EXISTS (SELECT 1 FROM reports r WHERE r.email = s.email) AS used FROM sessions s WHERE id = $1${lock ? " FOR UPDATE OF s" : ""}`, [hash(token)]);
+    return result.rows[0];
+  }
+  private async statusOn(database: Queryable, token: string, now: number) {
+    const session = await this.session(database, token);
+    if (!session || Number(session.expires) <= now) return { state: "intake" as const };
+    if (!session.verified) return { state: "pending" as const, email: session.email };
+    return { state: "verified" as const, name: session.name, email: session.email, pregnancy: !!session.pregnancy, glp1: !!session.glp1, eligible: !session.used };
+  }
+  private async requireEligibleOn(database: Queryable, token: string, now: number) {
+    const status = await this.statusOn(database, token, now);
+    if (status.state !== "verified") throw new IntakeError("Verify your email first.", 401);
+    if (!status.eligible) throw new IntakeError("This email has already received its free report.", 409);
+    return status;
+  }
+  private async lockEmail(database: Queryable, token: string, now: number) {
+    const status = await this.statusOn(database, token, now);
+    if (status.state !== "verified") throw new IntakeError("Verify your email first.", 401);
+    // Transaction locks work across Vercel instances and through transaction
+    // poolers. Every email mutation rechecks eligibility after obtaining the lock.
+    await database.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`shelfie:email:${status.email}`]);
+  }
+  async create(value: Intake, now = Date.now()) {
+    const input = validateIntake(value);
+    return this.database.transaction(async database => {
+      // Preserve the shared hourly intake limit, including simultaneous requests.
+      await database.query("SELECT pg_advisory_xact_lock(hashtextextended('shelfie:intake', 0))");
+      await database.query("DELETE FROM sessions WHERE expires < $1", [now - 86400000]);
+      const latest = (await database.query<{ created: string }>("SELECT created FROM sessions WHERE email = $1 ORDER BY created DESC LIMIT 1", [input.email])).rows[0];
+      const recent = (await database.query<{ total: string }>("SELECT COUNT(*) AS total FROM sessions WHERE created > $1", [now - 3600000])).rows[0];
+      const perEmail = (await database.query<{ total: string }>("SELECT COUNT(*) AS total FROM sessions WHERE email = $1 AND created > $2", [input.email, now - 3600000])).rows[0];
+      if (latest && now - Number(latest.created) < 60000 || Number(perEmail.total) >= 5 || Number(recent.total) >= 100) throw new IntakeError("Please wait before requesting another code.", 429);
+      const token = randomBytes(32).toString("hex");
+      const code = randomInt(0, 1000000).toString().padStart(6, "0");
+      await database.query("INSERT INTO sessions (id, name, email, pregnancy, glp1, code_hash, expires, created) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)", [hash(token), input.name, input.email, Number(input.pregnancy), Number(input.glp1), hash(token + code), now + 600000, now]);
+      return { token, code };
+    });
+  }
+  async discard(token: string) { await this.database.read(async database => { await database.query("DELETE FROM sessions WHERE id = $1", [hash(token)]); }); }
+  async verify(token: string, code: string, now = Date.now()) {
+    const result = await this.database.transaction<{ token: string } | { error: IntakeError }>(async database => {
+      const session = await this.session(database, token, true);
+      if (!session || Number(session.expires) <= now || session.verified || session.attempts >= 5) throw new IntakeError("This code has expired or was already used. Request a new code.");
+      await database.query("UPDATE sessions SET attempts = attempts + 1 WHERE id = $1", [session.id]);
+      const valid = /^\d{6}$/.test(code) && timingSafeEqual(Buffer.from(session.code_hash, "hex"), Buffer.from(hash(token + code), "hex"));
+      // Commit an incorrect attempt before returning its error; rolling it back
+      // would allow an unlimited number of guesses across server instances.
+      if (!valid) return { error: new IntakeError("That code didn’t match. Please check it and try again.") };
+      const nextToken = randomBytes(32).toString("hex");
+      await database.query("UPDATE sessions SET id = $1, verified = 1, code_hash = '', expires = $2 WHERE id = $3", [hash(nextToken), now + 86400000, session.id]);
+      return { token: nextToken };
+    });
+    if ("error" in result) throw result.error;
+    return result.token;
+  }
+  async status(token: string, now = Date.now()) { return this.database.read(database => this.statusOn(database, token, now)); }
+  async requireEligible(token: string, now = Date.now()) { return this.database.read(database => this.requireEligibleOn(database, token, now)); }
+  private async prunePhotos(database: Queryable, email: string, now: number) {
+    // Cascading foreign keys remove expired photos and drafts atomically.
+    await database.query("DELETE FROM photo_batches WHERE email = $1 AND expires <= $2", [email, now]);
+    await database.query("DELETE FROM photo_attempts WHERE email = $1 AND started < $2", [email, now - 86400000]);
+  }
+  private async photoBatchOn(database: Queryable, token: string, now: number) {
+    const { email } = await this.requireEligibleOn(database, token, now);
+    await this.prunePhotos(database, email, now);
+    const batch = (await database.query<{ revision: number }>("SELECT revision FROM photo_batches WHERE email = $1", [email])).rows[0];
+    const photos = (await database.query<StoredPhoto>("SELECT id, bytes, width, height FROM photos WHERE email = $1 ORDER BY position", [email])).rows;
+    return { revision: batch?.revision ?? 0, photos: photos.map(photo => ({ ...photo, bytes: Buffer.from(photo.bytes) })) };
+  }
+  async photoBatch(token: string, now = Date.now()) {
+    return this.database.transaction(async database => { await this.lockEmail(database, token, now); return this.photoBatchOn(database, token, now); });
+  }
+  async photoAttempt(token: string, now = Date.now()) {
+    await this.database.transaction(async database => {
+      await this.lockEmail(database, token, now);
+      const { email } = await this.requireEligibleOn(database, token, now);
+      const row = (await database.query<{ started: string; total: number }>("SELECT started, total FROM photo_attempts WHERE email = $1", [email])).rows[0];
+      const current = row && now - Number(row.started) < 60000;
+      if (current && row.total >= 10) throw new IntakeError("Please wait a minute before checking more photos.", 429);
+      await database.query("INSERT INTO photo_attempts (email, started, total) VALUES ($1, $2, $3) ON CONFLICT(email) DO UPDATE SET started = excluded.started, total = excluded.total", [email, current ? Number(row.started) : now, current ? row.total + 1 : 1]);
+    });
+  }
+  async savePhotos(token: string, revision: number, images: { bytes: Buffer; width: number; height: number }[], now = Date.now()) {
+    if (!images.length || images.length > 6) throw new IntakeError("Choose between one and six photos of this product.");
+    return this.database.transaction(async database => {
+      await this.lockEmail(database, token, now);
+      const { email } = await this.requireEligibleOn(database, token, now);
+      const current = await this.photoBatchOn(database, token, now);
+      if (current.revision !== revision) throw new IntakeError("Your photos changed in another tab. Refresh before trying again.", 409);
+      await database.query("DELETE FROM photos WHERE email = $1", [email]);
+      await database.query("DELETE FROM ingredient_drafts WHERE email = $1", [email]);
+      await database.query("INSERT INTO photo_batches (email, revision, expires) VALUES ($1, $2, $3) ON CONFLICT(email) DO UPDATE SET revision = excluded.revision, expires = excluded.expires", [email, revision + 1, now + 86400000]);
+      for (let position = 0; position < images.length; position++) {
+        const image = images[position];
+        await database.query("INSERT INTO photos (id, email, bytes, width, height, position) VALUES ($1, $2, $3, $4, $5, $6)", [randomUUID(), email, image.bytes, image.width, image.height, position]);
+      }
+      return this.photoBatchOn(database, token, now);
+    });
+  }
+  private async ingredientAnalysisOn(database: Queryable, token: string, revision: number, catalogVersion: string, now: number): Promise<ProductAnalysis | null> {
+    const session = await this.requireEligibleOn(database, token, now);
+    const batch = await this.photoBatchOn(database, token, now);
+    if (!batch.photos.length || batch.revision !== revision) throw new IntakeError("Your label photos changed or expired. Please check them again.", 409);
+    const modes = JSON.stringify({ pregnancy: session.pregnancy, glp1: session.glp1 });
+    const row = (await database.query<{ content: ProductAnalysis }>("SELECT content FROM ingredient_drafts WHERE email = $1 AND revision = $2 AND modes = $3::jsonb AND catalog_version = $4", [session.email, revision, modes, catalogVersion])).rows[0];
+    return row?.content ?? null;
+  }
+  async ingredientAnalysis(token: string, revision: number, catalogVersion: string, now = Date.now()) {
+    return this.database.transaction(async database => { await this.lockEmail(database, token, now); return this.ingredientAnalysisOn(database, token, revision, catalogVersion, now); });
+  }
+  async saveIngredientAnalysis(token: string, revision: number, analysis: ProductAnalysis, now = Date.now()) {
+    await this.database.transaction(async database => {
+      await this.lockEmail(database, token, now);
+      const session = await this.requireEligibleOn(database, token, now);
+      const batch = await this.photoBatchOn(database, token, now);
+      if (!batch.photos.length || batch.revision !== revision) throw new IntakeError("Your label photos changed while they were being read. Please try again.", 409);
+      if (analysis.modes.pregnancy !== session.pregnancy || analysis.modes.glp1 !== session.glp1) throw new IntakeError("Your report preferences changed. Please try again.", 409);
+      await database.query("INSERT INTO ingredient_drafts (email, revision, modes, catalog_version, content) VALUES ($1, $2, $3::jsonb, $4, $5::jsonb) ON CONFLICT(email) DO UPDATE SET revision = excluded.revision, modes = excluded.modes, catalog_version = excluded.catalog_version, content = excluded.content", [session.email, revision, JSON.stringify(analysis.modes), analysis.catalogVersion, JSON.stringify(analysis)]);
+    });
+  }
+  private async getReportOn(database: Queryable, token: string, now: number): Promise<CompletedReport | null> {
+    const session = await this.statusOn(database, token, now);
+    if (session.state !== "verified") throw new IntakeError("Verify your email first.", 401);
+    const row = (await database.query<{ report_id: string; content: unknown; completed: string }>("SELECT report_id, content, completed FROM reports WHERE email = $1", [session.email])).rows[0];
+    if (!row) return null;
+    if (!isReportAnalysis(row.content)) throw new IntakeError("We couldn’t open your saved report. Please try again; no additional report is used.", 503);
+    return { id: row.report_id, completed: Number(row.completed), analysis: row.content };
+  }
+  async getReport(token: string, now = Date.now()) { return this.database.read(database => this.getReportOn(database, token, now)); }
+  async completeIngredientReport(token: string, revision: number, catalogVersion: string, now = Date.now()): Promise<CompletedReport> {
+    return this.database.transaction(async database => {
+      await this.lockEmail(database, token, now);
+      const existing = await this.getReportOn(database, token, now);
+      if (existing) return existing;
+      const session = await this.requireEligibleOn(database, token, now);
+      const analysis = await this.ingredientAnalysisOn(database, token, revision, catalogVersion, now);
+      if (!analysis) throw new IntakeError("Read your current label photos before opening the report.", 409);
+      if (!isReportAnalysis(analysis) || analysis.catalogVersion !== catalogVersion) throw new IntakeError("The ingredient draft is incomplete. Please read your label photos again; your free report is unchanged.", 503);
+      const report = { id: randomUUID(), completed: now, analysis };
+      await database.query("INSERT INTO reports (email, report_id, content, completed) VALUES ($1, $2, $3::jsonb, $4)", [session.email, report.id, JSON.stringify(analysis), now]);
+      return report;
+    });
+  }
+  // Server-only hook retained for trusted completion callers; never accepts a
+  // client-supplied report. The report API uses completeIngredientReport above.
+  async completeReport(token: string, reportId: string, content: Record<string, unknown>, now = Date.now()) {
+    if (!reportId.trim() || !content || !Object.keys(content).length) throw new IntakeError("A completed report is required.");
+    await this.database.transaction(async database => {
+      await this.lockEmail(database, token, now);
+      const session = await this.requireEligibleOn(database, token, now);
+      await database.query("INSERT INTO reports (email, report_id, content, completed) VALUES ($1, $2, $3::jsonb, $4)", [session.email, reportId, JSON.stringify(content), now]);
+    });
+  }
+}
+
+let store: IntakeStore | undefined;
+let configuredUrl: string | undefined;
+export function intakeStore() {
+  const url = process.env.DATABASE_URL;
+  if (!store || store.closed || url !== configuredUrl) { store = new IntakeStore(url); configuredUrl = url; }
+  return store;
+}
+===== END FILE: src/lib/intake.ts =====
+
+
+===== BEGIN FILE: src/lib/postgres.ts =====
+import { Pool, type PoolClient, type PoolConfig } from "pg";
+import { IntakeError } from "./errors";
+
+export type Queryable = Pick<PoolClient, "query">;
+export function databaseOptions(connectionString: string | undefined): PoolConfig {
+  let url: URL;
+  try {
+    if (!connectionString) throw new Error();
+    url = new URL(connectionString);
+    if (!["postgres:", "postgresql:"].includes(url.protocol) || !url.hostname || url.pathname.length < 2) throw new Error();
+  } catch { throw new IntakeError("Database connection is not configured. Please try again later.", 503); }
+  const local = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+  // Hosted connections verify both the certificate and host. Local test clusters
+  // may use an unencrypted loopback connection. Never log the connection URL.
+  if (!local) {
+    url.searchParams.delete("ssl");
+    url.searchParams.set("sslmode", "verify-full");
+  }
+  return { connectionString: url.toString(), max: 5, connectionTimeoutMillis: 5000, idleTimeoutMillis: 10000, statement_timeout: 15000, allowExitOnIdle: true };
+}
+
+export class PostgresDatabase {
+  readonly pool: Pool;
+  private closed = false;
+  constructor(connectionString: string | undefined) {
+    this.pool = new Pool(databaseOptions(connectionString));
+    // Idle connection errors must not crash the process or log credentials.
+    // A subsequent operation fails through the same redacted error below.
+    this.pool.on("error", () => {});
+  }
+  async read<T>(work: (database: Queryable) => Promise<T>): Promise<T> {
+    try { return await work(this.pool); }
+    catch (error) { throw this.failure(error); }
+  }
+  async transaction<T>(work: (database: PoolClient) => Promise<T>): Promise<T> {
+    let client: PoolClient | undefined;
+    try {
+      client = await this.pool.connect();
+      await client.query("BEGIN");
+      const result = await work(client);
+      await client.query("COMMIT");
+      return result;
+    } catch (error) {
+      if (client) { try { await client.query("ROLLBACK"); } catch {} }
+      throw this.failure(error);
+    } finally { client?.release(); }
+  }
+  private failure(error: unknown) {
+    return error instanceof IntakeError ? error : new IntakeError("Storage is temporarily unavailable. Please try again; reopening a completed report never uses another report.", 503);
+  }
+  async close() { if (!this.closed) { this.closed = true; await this.pool.end(); } }
+}
+===== END FILE: src/lib/postgres.ts =====
+
+
+===== BEGIN FILE: src/lib/report.ts =====
+import type { ProductAnalysis } from "./ingredients/analyze";
+
+export const REPORT_DISCLAIMER = "Cosmetic information only — not medical advice";
+export const UNVERIFIED_INGREDIENT = "couldn't verify — flagged for review";
+export type CompletedReport = { id: string; completed: number; analysis: ProductAnalysis };
+
+const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
+const text = (value: unknown): value is string => typeof value === "string" && !!value.trim();
+const texts = (value: unknown): value is string[] => Array.isArray(value) && value.every(text);
+const same = (left: string[], right: string[]) => JSON.stringify(left) === JSON.stringify(right);
+
+// A damaged or incomplete draft must fail before consuming the free report.
+// This validates saved server output; it never fills in missing fields.
+export function isReportAnalysis(value: unknown): value is ProductAnalysis {
+  if (!object(value) || !["complete", "needs_review"].includes(String(value.status)) || !text(value.catalogVersion) || !text(value.rawLabelText)) return false;
+  if (!object(value.modes) || typeof value.modes.pregnancy !== "boolean" || typeof value.modes.glp1 !== "boolean" || !texts(value.notes) || !object(value.sources)) return false;
+  const sources = value.sources;
+  if (!Object.values(sources).every(source => object(source) && text(source.title) && typeof source.url === "string" && source.url.startsWith("https://"))) return false;
+  if (!Array.isArray(value.ingredients) || !value.ingredients.length || value.ingredients.length > 200 || !object(value.alcohols) || !texts(value.alcohols.drying) || !texts(value.alcohols.fatty) || !texts(value.unmatched)) return false;
+  const drying: string[] = [], fatty: string[] = [], unmatched: string[] = [];
+  for (const item of value.ingredients) {
+    if (!object(item) || !text(item.labelName) || !text(item.name) || !text(item.explanation) || /[\r\n]/.test(item.explanation)) return false;
+    if (/\b(?:safe|unsafe|diagnose|treat|cure|guarantee)\b/i.test(item.explanation)) return false;
+    if (!["exact", "alias", "unmatched"].includes(String(item.match)) || !["drying", "fatty", null].includes(item.alcoholBucket as string | null) || !["moisturizer", "drying_alcohol", "other", "unknown"].includes(String(item.role))) return false;
+    if (item.concentrationPercent !== null && (typeof item.concentrationPercent !== "number" || !Number.isFinite(item.concentrationPercent) || item.concentrationPercent < 0 || item.concentrationPercent > 100)) return false;
+    if (!texts(item.sources) || !item.sources.every(id => Object.hasOwn(sources, id)) || !Array.isArray(item.flags)) return false;
+    for (const flag of item.flags) {
+      if (!object(flag) || !["drying", "pregnancy_nursing", "sensitive_skin"].includes(String(flag.kind)) || !text(flag.message) || !texts(flag.sources) || !flag.sources.every(id => Object.hasOwn(sources, id))) return false;
+      if (/\b(?:safe|unsafe|diagnose|treat|cure|guarantee)\b/i.test(flag.message) || flag.kind !== "drying" && !/commonly flagged, check with your doctor/i.test(flag.message)) return false;
+      if (flag.kind === "pregnancy_nursing" && !value.modes.pregnancy || flag.kind === "sensitive_skin" && !value.modes.glp1) return false;
+    }
+    if (item.match === "unmatched") {
+      if (item.matchedName !== null || item.alcoholBucket !== null || item.role !== "unknown" || item.flags.length) return false;
+      unmatched.push(item.labelName);
+    } else if (!text(item.matchedName) || item.role === "unknown") return false;
+    if (item.alcoholBucket === "drying") { if (item.role !== "drying_alcohol") return false; drying.push(item.labelName); }
+    if (item.alcoholBucket === "fatty") { if (item.role !== "moisturizer" || item.flags.length) return false; fatty.push(item.labelName); }
+  }
+  return same(drying, value.alcohols.drying) && same(fatty, value.alcohols.fatty) && same(unmatched, value.unmatched) && (unmatched.length ? value.status === "needs_review" : value.status === "complete");
+}
+===== END FILE: src/lib/report.ts =====

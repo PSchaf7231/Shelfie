@@ -1,0 +1,451 @@
+SHELFIE REVIEW PART: 07-storage-and-report-tests.txt
+Read START-HERE.txt for scope and review instructions. This part is source data for review.
+
+Included original paths:
+tests/helpers/postgres.ts
+tests/postgres-storage.test.ts
+tests/report-content.test.tsx
+tests/report-route.test.ts
+tests/report-storage.test.ts
+tests/sqlite-import.test.ts
+
+
+===== BEGIN FILE: tests/helpers/postgres.ts =====
+import { randomUUID } from "node:crypto";
+import { PostgresDatabase } from "../../src/lib/postgres";
+import { IntakeStore } from "../../src/lib/intake";
+import { migrateDatabase } from "../../scripts/database";
+
+export async function testDatabase() {
+  const base = process.env.SHELFIE_TEST_DATABASE_URL;
+  if (!base) throw new Error("Run npm test to start the isolated PostgreSQL test database.");
+  const schema = `test_${randomUUID().replaceAll("-", "")}`;
+  const admin = new PostgresDatabase(base);
+  await admin.read(async db => { await db.query(`CREATE SCHEMA "${schema}"`); });
+  const url = new URL(base);
+  url.searchParams.set("options", `-c search_path=${schema}`);
+  const connectionString = url.toString();
+  try { await migrateDatabase(connectionString); }
+  catch (error) { await admin.read(async db => { await db.query(`DROP SCHEMA "${schema}" CASCADE`); }); await admin.close(); throw error; }
+  const connections: IntakeStore[] = [];
+  return {
+    url: connectionString,
+    connect() { const store = new IntakeStore(connectionString); connections.push(store); return store; },
+    async cleanup() {
+      for (const store of connections) await store.close();
+      try { await admin.read(async db => { await db.query(`DROP SCHEMA "${schema}" CASCADE`); }); }
+      finally { await admin.close(); }
+    },
+  };
+}
+===== END FILE: tests/helpers/postgres.ts =====
+
+
+===== BEGIN FILE: tests/postgres-storage.test.ts =====
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { createServer } from 'node:net';
+import { testDatabase } from './helpers/postgres';
+import { IntakeStore, IntakeError } from '../src/lib/intake';
+import { PostgresDatabase, databaseOptions } from '../src/lib/postgres';
+import { analyzeIngredients } from '../src/lib/ingredients/analyze';
+import { CATALOG_VERSION } from '../src/lib/ingredients/catalog';
+import { migrateDatabase } from '../scripts/database';
+
+const now = 1800000000000;
+const input = { name: 'Ada', email: 'postgres@example.com', pregnancy: true, glp1: true };
+const photo = { bytes: Buffer.from('first private photo'), width: 900, height: 1000 };
+const label = { rawText: 'Aqua, Retinol', complete: true, certain: true, confidence: 0.99, ingredients: [{ text: 'Aqua', confidence: 0.99 }, { text: 'Retinol', confidence: 0.99 }] };
+const analysis = () => analyzeIngredients(label, { pregnancy: true, glp1: true });
+
+test('independent PostgreSQL pools complete simultaneously but save exactly one immutable report per normalized email', async () => {
+  const fixture = await testDatabase(); const inspect = new PostgresDatabase(fixture.url);
+  try {
+    const a = fixture.connect(), b = fixture.connect();
+    const pendingA = await a.create({ ...input, email: ' POSTGRES@EXAMPLE.COM ' }, now);
+    const tokenA = await a.verify(pendingA.token, pendingA.code, now);
+    const pendingB = await b.create(input, now + 60001);
+    const tokenB = await b.verify(pendingB.token, pendingB.code, now + 60001);
+    await a.savePhotos(tokenA, 0, [photo], now);
+    await a.saveIngredientAnalysis(tokenA, 1, analysis(), now);
+    const reports = await Promise.all(Array.from({ length: 20 }, (_, i) => (i % 2 ? a : b).completeIngredientReport(i % 2 ? tokenA : tokenB, 1, CATALOG_VERSION, now + 60001)));
+    assert.equal(new Set(reports.map(report => report.id)).size, 1);
+    await inspect.read(async db => {
+      assert.equal((await db.query('SELECT COUNT(*) AS total FROM reports')).rows[0].total, '1');
+      assert.equal((await db.query('SELECT email FROM reports')).rows[0].email, input.email);
+    });
+    await assert.rejects(a.requireEligible(tokenA, now + 60001), /already/);
+    await a.close(); await b.close();
+    assert.deepEqual(await fixture.connect().getReport(tokenB, now + 60001), reports[0]);
+  } finally { await inspect.close(); await fixture.cleanup(); }
+});
+
+test('database constraints reject a second or non-normalized report even when application locks are bypassed', async () => {
+  const fixture = await testDatabase(); const database = new PostgresDatabase(fixture.url);
+  try {
+    await database.read(async db => { await db.query('INSERT INTO reports (email, report_id, content, completed) VALUES ($1,$2,$3::jsonb,$4)', [input.email, 'first-report', JSON.stringify(analysis()), now]); });
+    for (const address of [input.email, ' POSTGRES@EXAMPLE.COM ']) {
+      await assert.rejects(database.transaction(async db => { await db.query('INSERT INTO reports (email, report_id, content, completed) VALUES ($1,$2,$3::jsonb,$4)', [address, 'second-report', JSON.stringify(analysis()), now]); }), error => error instanceof IntakeError && error.status === 503);
+    }
+    await database.read(async db => { assert.equal((await db.query('SELECT COUNT(*) AS total FROM reports')).rows[0].total, '1'); });
+  } finally { await database.close(); await fixture.cleanup(); }
+});
+
+test('simultaneous retakes cannot overwrite one another and a retake racing completion has only one winner', async () => {
+  const fixture = await testDatabase();
+  try {
+    const a = fixture.connect(), b = fixture.connect();
+    const pending = await a.create(input, now); const token = await a.verify(pending.token, pending.code, now);
+    await a.savePhotos(token, 0, [photo], now);
+    const retakes = await Promise.allSettled([a.savePhotos(token, 1, [photo], now), b.savePhotos(token, 1, [photo], now)]);
+    assert.equal(retakes.filter(result => result.status === 'fulfilled').length, 1);
+    const refused = retakes.find(result => result.status === 'rejected');
+    assert.ok(refused?.status === 'rejected' && refused.reason.status === 409);
+    assert.equal((await a.photoBatch(token, now)).revision, 2);
+    assert.equal((await a.requireEligible(token, now)).eligible, true);
+    await a.saveIngredientAnalysis(token, 2, analysis(), now);
+    const [report, retake] = await Promise.allSettled([a.completeIngredientReport(token, 2, CATALOG_VERSION, now), b.savePhotos(token, 2, [photo], now)]);
+    assert.equal(Number(report.status === 'fulfilled') + Number(retake.status === 'fulfilled'), 1);
+    if (report.status === 'fulfilled') {
+      assert.deepEqual(await b.getReport(token, now), report.value);
+      assert.ok(retake.status === 'rejected' && retake.reason.status === 409);
+      await assert.rejects(b.requireEligible(token, now), /already/);
+    } else {
+      assert.equal(report.reason.status, 409);
+      assert.equal((await a.requireEligible(token, now)).eligible, true);
+      assert.equal(await a.getReport(token, now), null);
+    }
+  } finally { await fixture.cleanup(); }
+});
+
+test('a database failure midway through photo replacement rolls back photos, revision and draft without consuming a report', async () => {
+  const fixture = await testDatabase();
+  try {
+    const store = fixture.connect(); const pending = await store.create(input, now);
+    const token = await store.verify(pending.token, pending.code, now);
+    const original = await store.savePhotos(token, 0, [photo], now);
+    const draft = analysis(); await store.saveIngredientAnalysis(token, 1, draft, now);
+    await assert.rejects(store.savePhotos(token, 1, [{ ...photo, width: 0 }], now), error => error instanceof IntakeError && error.status === 503);
+    assert.deepEqual(await store.photoBatch(token, now), original);
+    assert.deepEqual(await store.ingredientAnalysis(token, 1, CATALOG_VERSION, now), draft);
+    assert.equal((await store.requireEligible(token, now)).eligible, true);
+    assert.equal(await store.getReport(token, now), null);
+  } finally { await fixture.cleanup(); }
+});
+
+test('verification attempts, photo-check limits and intake cooldowns are shared across concurrent PostgreSQL pools', async () => {
+  const fixture = await testDatabase(); const inspect = new PostgresDatabase(fixture.url);
+  try {
+    const a = fixture.connect(), b = fixture.connect();
+    const starts = await Promise.allSettled([a.create(input, now), b.create({ ...input, email: ' POSTGRES@EXAMPLE.COM ' }, now)]);
+    assert.equal(starts.filter(result => result.status === 'fulfilled').length, 1);
+    const started = starts.find(result => result.status === 'fulfilled'); assert.ok(started?.status === 'fulfilled');
+    const pending = started.value;
+    const wrong = pending.code === '000000' ? '000001' : '000000';
+    const guesses = await Promise.allSettled(Array.from({ length: 10 }, (_, i) => (i % 2 ? a : b).verify(pending.token, wrong, now)));
+    assert.ok(guesses.every(result => result.status === 'rejected'));
+    await assert.rejects(b.verify(pending.token, pending.code, now), /expired/);
+    await inspect.read(async db => { assert.equal((await db.query('SELECT attempts FROM sessions WHERE id = $1', [createHash('sha256').update(pending.token).digest('hex')])).rows[0].attempts, 5); });
+    const next = await a.create({ ...input, email: 'checks@example.com' }, now);
+    const token = await a.verify(next.token, next.code, now);
+    const checks = await Promise.allSettled(Array.from({ length: 16 }, (_, i) => (i % 2 ? a : b).photoAttempt(token, now)));
+    assert.equal(checks.filter(result => result.status === 'fulfilled').length, 10);
+    assert.ok(checks.filter(result => result.status === 'rejected').every(result => result.reason.status === 429));
+    assert.equal((await b.requireEligible(token, now)).eligible, true);
+  } finally { await inspect.close(); await fixture.cleanup(); }
+});
+
+test('PostgreSQL migrations can repeat and run concurrently without deleting saved data', async () => {
+  const fixture = await testDatabase(); const inspect = new PostgresDatabase(fixture.url);
+  try {
+    const store = fixture.connect(); const pending = await store.create(input, now);
+    const token = await store.verify(pending.token, pending.code, now);
+    await store.savePhotos(token, 0, [photo], now); await store.saveIngredientAnalysis(token, 1, analysis(), now);
+    const report = await store.completeIngredientReport(token, 1, CATALOG_VERSION, now);
+    await Promise.all(Array.from({ length: 4 }, () => migrateDatabase(fixture.url)));
+    assert.deepEqual(await store.getReport(token, now), report);
+    await inspect.read(async db => { assert.equal((await db.query('SELECT COUNT(*) AS total FROM schema_migrations')).rows[0].total, '1'); });
+  } finally { await inspect.close(); await fixture.cleanup(); }
+});
+
+test('missing or unavailable PostgreSQL fails closed with redacted errors; hosted connections verify TLS', async () => {
+  assert.throws(() => new IntakeStore(undefined), error => error instanceof IntakeError && error.status === 503);
+  const remote = new URL(String(databaseOptions('postgresql://fixture-user:fixture-secret@db.example.invalid/shelfie?sslmode=disable&ssl=0').connectionString));
+  assert.equal(remote.searchParams.get('sslmode'), 'verify-full'); assert.equal(remote.searchParams.has('ssl'), false);
+  const server = createServer(); await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address(); assert.ok(address && typeof address !== 'string');
+  await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  const url = new URL(`postgresql://127.0.0.1:${address.port}/unavailable`); url.username = 'fixture-user'; url.password = 'fixture-secret';
+  const store = new IntakeStore(url.toString());
+  try {
+    await assert.rejects(store.requireEligible('fixture-token'), error => {
+      assert.ok(error instanceof IntakeError); assert.equal(error.status, 503);
+      assert.doesNotMatch(error.message, /fixture-secret|fixture-user|postgresql:|127\.0\.0\.1/);
+      return true;
+    });
+  } finally { await store.close(); }
+});
+===== END FILE: tests/postgres-storage.test.ts =====
+
+
+===== BEGIN FILE: tests/report-content.test.tsx =====
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import ReportContent from '../src/components/report-content';
+import { analyzeIngredients } from '../src/lib/ingredients/analyze';
+import { parseIngredientList } from '../src/lib/ingredients/parser';
+import { isReportAnalysis, UNVERIFIED_INGREDIENT } from '../src/lib/report';
+
+function fixture(pregnancy = true, glp1 = true) {
+  const rawText = 'Ethanol, Cetyl Alcohol, Cetearyl Alcohol, Stearyl Alcohol, Retinol, Parfum, Unlisted Botanical Extract';
+  const analysis = analyzeIngredients({ rawText, complete: true, certain: true, confidence: 0.99, ingredients: parseIngredientList(rawText).map(item => ({ text: item.raw, confidence: 0.99 })) }, { pregnancy, glp1 });
+  return { id: 'fixture-report', completed: 1800000000000, analysis };
+}
+test('report shows every ingredient, distinct alcohol sections, explicit unknowns and both mode flags without medical claims', () => {
+  const report = fixture();
+  const html = renderToStaticMarkup(createElement(ReportContent, { report }));
+  for (const item of report.analysis.ingredients) assert.ok(html.includes(item.labelName));
+  assert.ok(html.includes(UNVERIFIED_INGREDIENT.replace("'", '&#x27;')));
+  assert.ok(html.includes('Cosmetic information only — not medical advice'));
+  const drying = html.split('id="drying-alcohols"')[1].split('id="fatty-alcohols"')[0];
+  assert.ok(drying.includes('Ethanol')); assert.ok(!drying.includes('Cetyl Alcohol'));
+  const fatty = html.split('id="fatty-alcohols"')[1].split('id="pregnancy_nursing"')[0];
+  for (const name of ['Cetyl Alcohol', 'Cetearyl Alcohol', 'Stearyl Alcohol']) assert.ok(fatty.includes(name));
+  assert.ok(fatty.includes('Moisturizer')); assert.ok(!fatty.includes('Flagged as drying'));
+  assert.ok(html.includes('Pregnancy &amp; nursing mode')); assert.ok(html.includes('GLP-1 sensitive-skin mode'));
+  for (const flag of report.analysis.ingredients.flatMap(item => item.flags).filter(flag => flag.kind !== 'drying')) assert.match(flag.message, /commonly flagged, check with your doctor/i);
+  assert.doesNotMatch(html, /\b(?:safe|unsafe|diagnose|treat|cure|guarantee)\b/i);
+  const off = renderToStaticMarkup(createElement(ReportContent, { report: fixture(false, false) }));
+  assert.equal(off.match(/This mode was off for this report/g)?.length, 2);
+  assert.ok(!off.includes('Commonly flagged, check with your doctor'));
+});
+test('draft validation refuses missing content, contradictory alcohol buckets and unsupported mode claims', () => {
+  const { analysis } = fixture();
+  assert.equal(isReportAnalysis(analysis), true);
+  assert.equal(isReportAnalysis({ ...analysis, ingredients: [] }), false);
+  assert.equal(isReportAnalysis({ ...analysis, alcohols: { drying: ['Cetyl Alcohol'], fatty: ['Ethanol'] } }), false);
+  assert.equal(isReportAnalysis({ ...analysis, modes: { pregnancy: false, glp1: false } }), false);
+  assert.equal(isReportAnalysis({ ...analysis, ingredients: analysis.ingredients.map(item => ({ ...item, explanation: 'This is safe.' })) }), false);
+});
+===== END FILE: tests/report-content.test.tsx =====
+
+
+===== BEGIN FILE: tests/report-route.test.ts =====
+import { testDatabase } from './helpers/postgres';
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { NextRequest } from 'next/server';
+import { intakeStore } from '../src/lib/intake';
+import { analyzeIngredients } from '../src/lib/ingredients/analyze';
+import { POST } from '../src/app/api/report/route';
+test('report endpoint rejects unverified, cross-origin and client-written content; repeated completion returns the owned saved report', async () => {
+    const fixture = await testDatabase();
+    const before = process.env.DATABASE_URL;
+    process.env.DATABASE_URL = fixture.url;
+    const store = intakeStore();
+    const pending = await store.create({ name: 'Ada', email: 'route-report@example.com', pregnancy: false, glp1: false });
+    const token = await store.verify(pending.token, pending.code);
+    const otherPending = await store.create({ name: 'Other', email: 'other-report@example.com', pregnancy: false, glp1: false });
+    const other = await store.verify(otherPending.token, otherPending.code);
+    const request = (who: string, data: unknown = { revision: 1 }, origin = 'http://localhost') => new NextRequest('http://localhost/api/report', { method: 'POST', headers: { host: 'localhost', origin, 'content-type': 'application/json', cookie: `shelfie_session=${who}` }, body: JSON.stringify(data) });
+    try {
+        assert.equal((await POST(request(''))).status, 401);
+        assert.equal((await POST(request(pending.token))).status, 401);
+        assert.equal((await POST(request(token, { revision: 1 }, 'https://elsewhere.example'))).status, 403);
+        for (const data of [{ revision: 0 }, { revision: 1, content: { ingredients: [] } }, { revision: 1, email: 'other-report@example.com' }, { revision: 1, pregnancy: true }])
+            assert.equal((await POST(request(token, data))).status, 400);
+        assert.equal((await POST(request(token))).status, 409);
+        await store.savePhotos(token, 0, [{ bytes: Buffer.from('already checked photo'), width: 1000, height: 900 }]);
+        assert.equal((await POST(request(token))).status, 409);
+        const label = { rawText: 'Aqua', complete: true, certain: true, confidence: 0.99, ingredients: [{ text: 'Aqua', confidence: 0.99 }] };
+        await store.saveIngredientAnalysis(token, 1, analyzeIngredients(label, { pregnancy: false, glp1: false }));
+        const results = await Promise.all([POST(request(token)), POST(request(token))]);
+        assert.deepEqual(results.map(result => result.status), [200, 200]);
+        const first = await results[0].json();
+        assert.deepEqual(await results[1].json(), first);
+        assert.equal(results[0].headers.get('cache-control'), 'no-store');
+        assert.equal(first.analysis.ingredients[0].name, 'Aqua');
+        await assert.rejects(async () => await store.requireEligible(token), /already/);
+        assert.equal((await POST(request(other))).status, 409);
+        assert.equal((await store.requireEligible(other)).eligible, true);
+    }
+    finally {
+        await store.close();
+        await fixture.cleanup();
+        if (before === undefined)
+            delete process.env.DATABASE_URL;
+        else
+            process.env.DATABASE_URL = before;
+    }
+});
+===== END FILE: tests/report-route.test.ts =====
+
+
+===== BEGIN FILE: tests/report-storage.test.ts =====
+import { testDatabase } from './helpers/postgres';
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { IntakeStore, validateIntake } from '../src/lib/intake';
+import { analyzeIngredients } from '../src/lib/ingredients/analyze';
+import { CATALOG_VERSION } from '../src/lib/ingredients/catalog';
+import { parseIngredientList } from '../src/lib/ingredients/parser';
+const now = 1800000000000;
+const input = { name: 'Ada', email: 'ada-report@example.com', pregnancy: true, glp1: true };
+const photo = { bytes: Buffer.from('previously checked private label'), width: 900, height: 1000 };
+function analysis() {
+    const rawText = 'Ethanol, Cetyl Alcohol, Retinol, Parfum, Unlisted Botanical Extract';
+    return analyzeIngredients({ rawText, complete: true, certain: true, confidence: 0.99, ingredients: parseIngredientList(rawText).map(item => ({ text: item.raw, confidence: 0.99 })) }, { pregnancy: true, glp1: true });
+}
+test('only a current, renderable server draft can complete; failures leave the free report available', async () => {
+    const fixture = await testDatabase();
+    const store = fixture.connect();
+    try {
+        const pending = await store.create(input, now);
+        await assert.rejects(async () => await store.getReport(pending.token, now), /Verify/);
+        await assert.rejects(async () => await store.completeIngredientReport(pending.token, 1, CATALOG_VERSION, now), /Verify/);
+        const token = await store.verify(pending.token, pending.code, now);
+        assert.equal(await store.getReport(token, now), null);
+        await assert.rejects(async () => await store.completeIngredientReport(token, 1, CATALOG_VERSION, now), /photos/);
+        await store.savePhotos(token, 0, [photo], now);
+        await assert.rejects(async () => await store.completeIngredientReport(token, 1, CATALOG_VERSION, now), /Read/);
+        const draft = analysis();
+        await store.saveIngredientAnalysis(token, 1, { ...draft, ingredients: [] }, now);
+        await assert.rejects(async () => await store.completeIngredientReport(token, 1, CATALOG_VERSION, now), /incomplete/);
+        assert.equal((await store.requireEligible(token, now)).eligible, true);
+        await store.saveIngredientAnalysis(token, 1, draft, now);
+        await assert.rejects(async () => await store.completeIngredientReport(token, 1, 'old-catalog', now), /Read/);
+        await assert.rejects(async () => await store.completeIngredientReport(token, 2, CATALOG_VERSION, now), /photos/);
+        const second = await store.create({ ...input, pregnancy: false }, now + 60001);
+        const otherModes = await store.verify(second.token, second.code, now + 60001);
+        await assert.rejects(async () => await store.completeIngredientReport(otherModes, 1, CATALOG_VERSION, now + 60001), /Read/);
+        assert.equal((await store.requireEligible(token, now + 60001)).eligible, true);
+        await store.savePhotos(token, 1, [photo], now + 60001);
+        await assert.rejects(async () => await store.completeIngredientReport(token, 1, CATALOG_VERSION, now + 60001), /photos/);
+        await assert.rejects(async () => await store.completeIngredientReport(token, 2, CATALOG_VERSION, now + 60001), /Read/);
+        assert.equal(await store.getReport(token, now + 60001), null);
+        assert.equal((await store.requireEligible(token, now + 60001)).eligible, true);
+    }
+    finally {
+        await fixture.cleanup();
+    }
+});
+test('completion consumes exactly once per normalized email and reopens the same immutable report across sessions and restart', async () => {
+    const fixture = await testDatabase();
+    let store = fixture.connect();
+    let otherConnection: IntakeStore | undefined;
+    try {
+        const a = await store.create(validateIntake({ ...input, email: ' ADA-REPORT@EXAMPLE.COM ' }), now);
+        const tokenA = await store.verify(a.token, a.code, now);
+        const b = await store.create(input, now + 60001);
+        const tokenB = await store.verify(b.token, b.code, now + 60001);
+        const stranger = await store.create({ ...input, email: 'stranger@example.com' }, now);
+        const strangerToken = await store.verify(stranger.token, stranger.code, now);
+        await store.savePhotos(tokenA, 0, [photo], now);
+        const draft = analysis();
+        await store.saveIngredientAnalysis(tokenA, 1, draft, now);
+        assert.equal((await store.requireEligible(tokenA, now)).eligible, true);
+        assert.equal(await store.getReport(tokenA, now), null); // Reading the page never completes a draft.
+        const report = await store.completeIngredientReport(tokenA, 1, CATALOG_VERSION, now + 60001);
+        assert.equal(report.analysis.status, 'needs_review'); // Explicit unknowns remain visible.
+        assert.deepEqual(report.analysis.unmatched, ['Unlisted Botanical Extract']);
+        await assert.rejects(async () => await store.requireEligible(tokenA, now + 60001), /already/);
+        await assert.rejects(async () => await store.savePhotos(tokenB, 1, [photo], now + 60001), /already/);
+        assert.equal(await store.getReport(strangerToken, now + 60001), null);
+        await assert.rejects(async () => await store.completeIngredientReport(strangerToken, 1, CATALOG_VERSION, now + 60001), /photos/);
+        assert.deepEqual(await store.completeIngredientReport(tokenB, 99, CATALOG_VERSION, now + 60001), report);
+        otherConnection = fixture.connect();
+        assert.deepEqual(await otherConnection.completeIngredientReport(tokenA, 1, CATALOG_VERSION, now + 60001), report);
+        await store.close();
+        store = fixture.connect();
+        assert.deepEqual(await store.getReport(tokenB, now + 60001), report);
+        assert.equal((await store.status(tokenB, now + 60001)).state, 'verified');
+        await assert.rejects(async () => await store.getReport(tokenB, now + 86460002), /Verify/);
+        const fresh = await store.create(input, now + 86460002);
+        const freshToken = await store.verify(fresh.token, fresh.code, now + 86460002);
+        assert.deepEqual(await store.getReport(freshToken, now + 86460002), report);
+        await assert.rejects(async () => await store.requireEligible(freshToken, now + 86460002), /already/);
+    }
+    finally {
+        await fixture.cleanup();
+    }
+});
+===== END FILE: tests/report-storage.test.ts =====
+
+
+===== BEGIN FILE: tests/sqlite-import.test.ts =====
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { createHash, randomBytes } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { testDatabase } from './helpers/postgres';
+import { importSqlite } from '../scripts/sqlite-import';
+import { analyzeIngredients } from '../src/lib/ingredients/analyze';
+import { CATALOG_VERSION } from '../src/lib/ingredients/catalog';
+import { PostgresDatabase } from '../src/lib/postgres';
+
+const now = 1800000000000;
+const hash = (value: string) => createHash('sha256').update(value).digest('hex');
+const schema = `CREATE TABLE sessions (id TEXT PRIMARY KEY, name TEXT, email TEXT, pregnancy INTEGER, glp1 INTEGER, code_hash TEXT, expires INTEGER, attempts INTEGER, verified INTEGER, created INTEGER);
+CREATE TABLE reports (email TEXT PRIMARY KEY, report_id TEXT, content TEXT, completed INTEGER);
+CREATE TABLE photo_batches (email TEXT PRIMARY KEY, revision INTEGER, expires INTEGER);
+CREATE TABLE photos (id TEXT PRIMARY KEY, email TEXT, bytes BLOB, width INTEGER, height INTEGER);
+CREATE TABLE photo_attempts (email TEXT PRIMARY KEY, started INTEGER, total INTEGER);
+CREATE TABLE ingredient_drafts (email TEXT PRIMARY KEY, revision INTEGER, modes TEXT, catalog_version TEXT, content TEXT);`;
+function reportAnalysis() { return analyzeIngredients({ rawText: 'Cetyl Alcohol', complete: true, certain: true, confidence: 0.99, ingredients: [{ text: 'Cetyl Alcohol', confidence: 0.99 }] }, { pregnancy: false, glp1: false }); }
+
+test('SQLite import preserves completed reports, used credits, verification hashes, photo order and unfinished drafts without changing the source', async () => {
+  const fixture = await testDatabase(); const dir = mkdtempSync(join(tmpdir(), 'shelfie-import-test-'));
+  const path = join(dir, 'old.sqlite'); const source = new DatabaseSync(path);
+  try {
+    source.exec(schema); const analysis = reportAnalysis();
+    const usedToken = randomBytes(32).toString('hex'), activeToken = randomBytes(32).toString('hex'), pendingToken = randomBytes(32).toString('hex');
+    const code = '123456';
+    const add = source.prepare('INSERT INTO sessions VALUES (?, ?, ?, 0, 0, ?, ?, 0, ?, ?)');
+    add.run(hash(usedToken), 'Ada', 'used@example.com', '', now + 86400000, 1, now);
+    add.run(hash(activeToken), 'Ada', 'active@example.com', '', now + 86400000, 1, now);
+    add.run(hash(pendingToken), 'Ada', 'pending@example.com', hash(pendingToken + code), now + 600000, 0, now);
+    source.prepare('INSERT INTO reports VALUES (?, ?, ?, ?)').run('used@example.com', 'original-report', JSON.stringify(analysis), now);
+    source.prepare('INSERT INTO photo_batches VALUES (?, ?, ?)').run('active@example.com', 3, now + 86400000);
+    const insert = source.prepare('INSERT INTO photos VALUES (?, ?, ?, ?, ?)');
+    insert.run('photo-first', 'active@example.com', Buffer.from('first'), 900, 1000);
+    insert.run('photo-second', 'active@example.com', Buffer.from('second'), 900, 1000);
+    source.prepare('INSERT INTO ingredient_drafts VALUES (?, ?, ?, ?, ?)').run('active@example.com', 3, JSON.stringify(analysis.modes), CATALOG_VERSION, JSON.stringify(analysis));
+    source.prepare('INSERT INTO photo_attempts VALUES (?, ?, ?)').run('active@example.com', now, 2);
+    const counts = await importSqlite(path, fixture.url);
+    assert.deepEqual(counts, { sessions: 3, reports: 1, photo_batches: 1, photos: 2, photo_attempts: 1, ingredient_drafts: 1 });
+    const store = fixture.connect();
+    assert.equal((await store.getReport(usedToken, now))?.id, 'original-report');
+    await assert.rejects(store.requireEligible(usedToken, now), /already/);
+    assert.deepEqual((await store.photoBatch(activeToken, now)).photos.map(photo => photo.bytes.toString()), ['first', 'second']);
+    assert.deepEqual(await store.ingredientAnalysis(activeToken, 3, CATALOG_VERSION, now), analysis);
+    assert.equal((await store.requireEligible(activeToken, now)).eligible, true);
+    const verified = await store.verify(pendingToken, code, now);
+    assert.equal((await store.requireEligible(verified, now)).eligible, true);
+    assert.equal((source.prepare('SELECT COUNT(*) AS total FROM reports').get() as { total: number }).total, 1);
+    assert.equal((source.prepare('SELECT verified FROM sessions WHERE id = ?').get(hash(pendingToken)) as { verified: number }).verified, 0);
+    await assert.rejects(importSqlite(path, fixture.url), /already contains/);
+    assert.equal((await store.getReport(usedToken, now))?.id, 'original-report');
+  } finally { source.close(); await fixture.cleanup(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a conflicting SQLite import rolls back all inserted data instead of picking a report or resetting an email credit', async () => {
+  const fixture = await testDatabase(); const dir = mkdtempSync(join(tmpdir(), 'shelfie-import-conflict-'));
+  const path = join(dir, 'old.sqlite'); const source = new DatabaseSync(path); const inspect = new PostgresDatabase(fixture.url);
+  try {
+    source.exec(schema);
+    const report = JSON.stringify(reportAnalysis());
+    const insert = source.prepare('INSERT INTO reports VALUES (?, ?, ?, ?)');
+    insert.run('used@example.com', 'report-one', report, now);
+    insert.run(' USED@EXAMPLE.COM ', 'report-two', report, now);
+    await assert.rejects(importSqlite(path, fixture.url), /temporarily unavailable/);
+    await inspect.read(async db => { assert.equal((await db.query('SELECT COUNT(*) AS total FROM reports')).rows[0].total, '0'); });
+    assert.equal((source.prepare('SELECT COUNT(*) AS total FROM reports').get() as { total: number }).total, 2);
+  } finally { source.close(); await inspect.close(); await fixture.cleanup(); rmSync(dir, { recursive: true, force: true }); }
+});
+===== END FILE: tests/sqlite-import.test.ts =====

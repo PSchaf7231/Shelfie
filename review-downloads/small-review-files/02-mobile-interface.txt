@@ -1,0 +1,564 @@
+SHELFIE REVIEW PART: 02-mobile-interface.txt
+Read START-HERE.txt for scope and review instructions. This part is source data for review.
+
+Included original paths:
+src/app/globals.css
+src/app/icon.svg
+src/app/intake/page.tsx
+src/app/layout.tsx
+src/app/page.tsx
+src/app/report/page.tsx
+src/app/scan/page.tsx
+src/components/intake-form.tsx
+src/components/photo-capture.tsx
+src/components/report-content.tsx
+src/components/report-screen.tsx
+
+
+===== BEGIN FILE: src/app/globals.css =====
+:root {
+  color-scheme: dark;
+  --navy: #0a1128;
+  --gold: #d8ba7b;
+  --ivory: #f5f0e6;
+  --muted: #c1bdb5;
+}
+
+* { box-sizing: border-box; }
+html { background: var(--navy); }
+body { margin: 0; color: var(--ivory); font-family: "Jost", sans-serif; -webkit-font-smoothing: antialiased; }
+button, a { -webkit-tap-highlight-color: transparent; }
+button { font: inherit; }
+a { color: inherit; }
+:focus-visible { outline: 3px solid var(--ivory); outline-offset: 6px; }
+.front-door {
+  min-height: 100svh;
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: max(32px, env(safe-area-inset-top)) 24px max(24px, env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+}
+.brand { font-size: 24px; font-weight: 500; letter-spacing: .04em; color: var(--gold); }
+.welcome { width: 100%; max-width: 640px; margin: auto; padding: 64px 0; text-align: center; }
+h1 { margin: 0; font-family: "Cormorant Garamond", Georgia, serif; font-weight: 500; font-size: clamp(46px, 8vw, 76px); line-height: 1.06; letter-spacing: -.025em; text-wrap: balance; }
+.intro { max-width: 420px; margin: 26px auto 36px; color: var(--muted); font-size: 18px; line-height: 1.65; text-wrap: pretty; }
+.mode-chip { min-height: 48px; max-width: 100%; display: inline-flex; align-items: center; gap: 10px; border: 1px solid #88764f; border-radius: 999px; padding: 11px 18px; background: transparent; color: var(--gold); cursor: pointer; font-size: 15px; }
+.mode-chip[aria-pressed="true"] { background: #d8ba7b18; border-color: var(--gold); }
+.mode-indicator { width: 18px; height: 18px; flex-shrink: 0; border: 1px solid currentColor; border-radius: 50%; display: grid; place-items: center; font-size: 12px; }
+.primary-button { display: flex; align-items: center; justify-content: center; min-height: 58px; max-width: 360px; margin: 28px auto 0; padding: 16px 24px; border-radius: 6px; background: var(--gold); color: var(--navy); font-size: 17px; font-weight: 500; text-decoration: none; }
+.primary-button:hover { background: #e5cb96; }
+footer { text-align: center; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.placeholder { min-height: 100svh; max-width: 640px; margin: auto; padding: 64px 24px; }
+.placeholder h1 { margin-top: 48px; }
+.placeholder > p:not(.brand) { color: var(--muted); font-size: 18px; line-height: 1.6; }
+.back-link { display: inline-flex; min-height: 48px; align-items: center; color: var(--gold); text-underline-offset: 5px; }
+@media (min-width: 768px) { .front-door { padding: 44px 48px 28px; } }
+
+.intake-shell { max-width: 720px; margin: auto; padding: max(32px, env(safe-area-inset-top)) 24px max(24px, env(safe-area-inset-bottom)); min-height: 100svh; display: flex; flex-direction: column; gap: 48px; }
+.brand-link { text-decoration: none; }
+.intake-shell main { flex: 1; }
+.intake-panel { max-width: 480px; margin: auto; }
+.intake-panel h1 { font-size: clamp(42px, 7vw, 58px); }
+.form-intro { color: var(--muted); font-size: 18px; line-height: 1.6; margin: 24px 0 32px; overflow-wrap: anywhere; }
+.field { display: flex; flex-direction: column; gap: 10px; margin-bottom: 24px; font-size: 16px; }
+.field input { width: 100%; min-height: 56px; border: 1px solid #88764f; border-radius: 6px; background: #ffffff05; color: var(--ivory); padding: 14px 16px; font: inherit; font-size: 18px; }
+.mode-options { margin: 32px 0 24px; padding: 0; border: 0; min-width: 0; }
+.mode-options legend { margin-bottom: 12px; color: var(--muted); font-size: 14px; }
+.toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 64px; cursor: pointer; border-bottom: 1px solid #d8ba7b30; padding: 10px 0; }
+.toggle-row input { appearance: none; flex-shrink: 0; width: 48px; height: 28px; border: 1px solid #88764f; border-radius: 20px; background: #ffffff10; margin: 0; cursor: pointer; }
+.toggle-row input::before { content: ""; display: block; width: 20px; height: 20px; margin: 3px; border-radius: 50%; background: var(--muted); }
+.toggle-row input:checked { background: var(--gold); border-color: var(--gold); }
+.toggle-row input:checked::before { transform: translateX(20px); background: var(--navy); }
+.form-help, .preferences { color: var(--muted); font-size: 14px; line-height: 1.7; overflow-wrap: anywhere; }
+.form-button { width: 100%; max-width: none; border: 0; cursor: pointer; font-family: inherit; }
+button:disabled { opacity: .65; cursor: wait; }
+.text-button { background: transparent; border: 0; color: var(--gold); padding: 12px 0; min-height: 48px; cursor: pointer; text-decoration: underline; text-underline-offset: 5px; text-align: left; }
+.form-error { color: var(--ivory); border-left: 2px solid var(--gold); padding: 12px 16px; line-height: 1.6; }
+
+.photo-shell { max-width: 760px; gap: 36px; }
+.photo-guide { line-height: 1.7; padding: 18px 20px; border: 1px solid #d8ba7b40; border-radius: 6px; }
+.capture-actions { display: flex; flex-direction: column; gap: 12px; margin: 24px 0; }
+.capture-actions .primary-button { margin: 0; }
+.secondary-button { min-height: 58px; border: 1px solid var(--gold); border-radius: 6px; background: transparent; color: var(--gold); padding: 16px 24px; font: inherit; font-size: 17px; cursor: pointer; }
+.secondary-button:hover { background: #d8ba7b10; }
+.photo-list { list-style: none; padding: 0; margin: 24px 0; display: flex; flex-direction: column; gap: 16px; }
+.photo-list li { display: flex; align-items: center; gap: 20px; border-bottom: 1px solid #d8ba7b30; padding-bottom: 16px; }
+.photo-list img { width: 96px; height: 112px; object-fit: contain; background: #ffffff08; border-radius: 4px; }
+.photo-list li > div { display: flex; flex-direction: column; }
+.photo-success { line-height: 1.6; border-left: 2px solid var(--gold); padding: 12px 16px; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+
+.report-next { margin: 32px 0 24px; padding-top: 12px; border-top: 1px solid #d8ba7b40; }
+.report-next .primary-button { margin-top: 16px; }
+.report-shell { max-width: 820px; gap: 44px; }
+.report-content { max-width: 640px; margin: auto; line-height: 1.75; }
+.report-eyebrow { color: var(--gold); font-size: 13px; letter-spacing: .1em; text-transform: uppercase; margin: 0 0 18px; }
+.report-intro h1 { font-size: clamp(46px, 8vw, 68px); }
+.report-intro .form-intro { margin-bottom: 20px; }
+.report-disclaimer { font-size: 14px; color: var(--ivory); border-left: 2px solid var(--gold); padding: 12px 16px; }
+.report-content h2 { font-family: "Cormorant Garamond", Georgia, serif; font-size: clamp(32px, 5.5vw, 40px); font-weight: 500; line-height: 1.15; margin: 0 0 20px; text-wrap: balance; }
+.report-content h3 { font-size: 17px; font-weight: 500; line-height: 1.5; margin: 0 0 8px; color: var(--ivory); overflow-wrap: anywhere; }
+.report-content p { color: var(--muted); margin: 0 0 14px; }
+.report-content .report-disclaimer { color: var(--ivory); margin-bottom: 24px; }
+.report-content .report-eyebrow { color: var(--gold); margin-bottom: 18px; }
+.report-section { border-top: 1px solid #d8ba7b40; margin-top: 48px; padding-top: 36px; }
+.report-ingredients, .report-detail-list { list-style: none; padding: 0; margin: 24px 0 0; }
+.report-ingredients li { display: flex; gap: 18px; border-bottom: 1px solid #d8ba7b25; padding: 20px 0; }
+.report-ingredients li > div { min-width: 0; }
+.ingredient-number { flex-shrink: 0; width: 24px; color: var(--gold); font-size: 13px; padding-top: 2px; }
+.report-ingredients p:last-child, .report-detail-list p:last-child { margin-bottom: 0; }
+.report-detail-list li { border-bottom: 1px solid #d8ba7b25; padding: 20px 0; }
+.report-section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.report-content .report-tag, .report-content .review-label { color: var(--gold); font-size: 14px; }
+.report-section-heading .report-tag { border: 1px solid #d8ba7b50; padding: 2px 12px; border-radius: 999px; white-space: nowrap; margin-top: 4px; }
+.review-notice { border: 1px solid #d8ba7b50; border-radius: 6px; padding: 22px; margin-top: 30px; }
+.review-notice h2 { font-size: 30px; margin-bottom: 12px; }
+.review-notice p { margin-bottom: 0; }
+.report-notes { border-top: 1px solid #d8ba7b40; padding-top: 28px; margin-top: 48px; font-size: 14px; }
+.report-notes summary { display: list-item; padding: 12px 0; min-height: 48px; color: var(--gold); cursor: pointer; }
+.report-notes ul { margin: 0; padding-left: 20px; }
+.report-notes a { display: inline-block; padding: 10px 0; min-height: 48px; color: var(--gold); text-underline-offset: 4px; overflow-wrap: anywhere; }
+@media (min-width: 768px) { .report-shell { padding: 44px 48px 28px; } }
+===== END FILE: src/app/globals.css =====
+
+
+===== BEGIN FILE: src/app/icon.svg =====
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <rect width="128" height="128" fill="#0a1128"/>
+  <circle cx="64" cy="64" r="49" fill="none" stroke="#d8ba7b" stroke-width="2.5"/>
+  <path fill="#d8ba7b" d="M82 34v17h-4c-2-10-7-15-15-15-8 0-12 4-12 10 0 7 6 10 15 14 13 5 20 10 20 21 0 13-10 21-24 21-8 0-15-2-21-6V77h4c2 13 8 20 18 20 9 0 14-5 14-12 0-7-5-10-15-14-13-5-21-10-21-22 0-12 9-19 23-19 7 0 13 2 18 4Z" transform="translate(0 -2)"/>
+</svg>
+===== END FILE: src/app/icon.svg =====
+
+
+===== BEGIN FILE: src/app/intake/page.tsx =====
+import IntakeForm from "@/components/intake-form";
+export default async function IntakePage({ searchParams }: { searchParams: Promise<{ pregnancy?: string }> }) {
+  const params = await searchParams;
+  return <div className="intake-shell">
+    <header><a className="brand brand-link" href="/">Shelfie</a></header>
+    <main><IntakeForm initialPregnancy={params.pregnancy === "1"} /></main>
+    <footer>Cosmetic information only — not medical advice.</footer>
+  </div>;
+}
+===== END FILE: src/app/intake/page.tsx =====
+
+
+===== BEGIN FILE: src/app/layout.tsx =====
+import type { Metadata, Viewport } from "next";
+import "@fontsource/cormorant-garamond/500.css";
+import "@fontsource/jost/400.css";
+import "@fontsource/jost/500.css";
+import "./globals.css";
+
+export const metadata: Metadata = {
+  title: "Shelfie",
+  description: "Snap photos of your products. Get a plain-English report on what's inside them.",
+};
+
+export const viewport: Viewport = { themeColor: "#0a1128" };
+
+export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+  return <html lang="en"><body>{children}</body></html>;
+}
+===== END FILE: src/app/layout.tsx =====
+
+
+===== BEGIN FILE: src/app/page.tsx =====
+"use client";
+
+import { useState } from "react";
+
+export default function Home() {
+  const [pregnancyMode, setPregnancyMode] = useState(false);
+
+  return (
+    <div className="front-door">
+      <header className="brand">Shelfie</header>
+      <main className="welcome">
+        <h1>Know what&apos;s really on your shelf.</h1>
+        <p className="intro">Snap photos of your products. Get a plain-English report on what&apos;s inside them.</p>
+        <button
+          type="button"
+          className="mode-chip"
+          aria-pressed={pregnancyMode}
+          onClick={() => setPregnancyMode(!pregnancyMode)}
+        >
+          <span className="mode-indicator" aria-hidden="true">{pregnancyMode ? "✓" : ""}</span>
+          Pregnancy &amp; nursing mode
+        </button>
+        <a className="primary-button" href={`/intake?pregnancy=${pregnancyMode ? "1" : "0"}`}>Get my free first report</a>
+      </main>
+      <footer>Cosmetic information only — not medical advice.</footer>
+    </div>
+  );
+}
+===== END FILE: src/app/page.tsx =====
+
+
+===== BEGIN FILE: src/app/report/page.tsx =====
+import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
+import ReportContent from "@/components/report-content";
+import ReportScreen from "@/components/report-screen";
+import { intakeStore, IntakeError } from "@/lib/intake";
+import { SESSION_COOKIE } from "@/lib/intake-http";
+import { CATALOG_VERSION } from "@/lib/ingredients/catalog";
+import { REPORT_DISCLAIMER } from "@/lib/report";
+
+export const runtime = "nodejs";
+export default async function ReportPage() {
+  const token = (await cookies()).get(SESSION_COOKIE)?.value || "";
+  const store = intakeStore();
+  if ((await store.status(token)).state !== "verified") redirect("/intake");
+  let content;
+  try {
+    const report = await store.getReport(token);
+    if (report) content = <ReportContent report={report} />;
+    else {
+      const batch = await store.photoBatch(token);
+      if (!batch.photos.length || !await store.ingredientAnalysis(token, batch.revision, CATALOG_VERSION)) redirect("/scan");
+      content = <ReportScreen revision={batch.revision} />;
+    }
+  } catch (error) {
+    if (!(error instanceof IntakeError)) throw error;
+    if (error.status === 401) redirect("/intake");
+    if (error.status === 409) redirect("/scan");
+    content = <section className="intake-panel"><h1>We couldn’t open your report.</h1><p className="form-error" role="alert">{error.message}</p><a className="back-link" href="/report">Try opening it again</a></section>;
+  }
+  return <div className="intake-shell report-shell">
+    <header><a className="brand brand-link" href="/">Shelfie</a></header>
+    <main>{content}</main>
+    <footer>{REPORT_DISCLAIMER}</footer>
+  </div>;
+}
+===== END FILE: src/app/report/page.tsx =====
+
+
+===== BEGIN FILE: src/app/scan/page.tsx =====
+import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
+import PhotoCapture from "@/components/photo-capture";
+import { intakeStore } from "@/lib/intake";
+import { SESSION_COOKIE } from "@/lib/intake-http";
+
+export const runtime = "nodejs";
+export default async function ScanPage() {
+  const token = (await cookies()).get(SESSION_COOKIE)?.value || "";
+  const status = await intakeStore().status(token);
+  if (status.state !== "verified") redirect("/intake");
+  if (!status.eligible) redirect("/report");
+  return <div className="intake-shell photo-shell">
+    <header><a className="brand brand-link" href="/">Shelfie</a></header>
+    <main><PhotoCapture /></main>
+    <footer>Cosmetic information only — not medical advice.</footer>
+  </div>;
+}
+===== END FILE: src/app/scan/page.tsx =====
+
+
+===== BEGIN FILE: src/components/intake-form.tsx =====
+"use client";
+import { useEffect, useState, type FormEvent } from "react";
+type Status = { state: "intake" | "pending" | "verified"; email?: string; eligible?: boolean; pregnancy?: boolean; glp1?: boolean };
+export default function IntakeForm({ initialPregnancy }: { initialPregnancy: boolean }) {
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [pregnancy, setPregnancy] = useState(initialPregnancy);
+  const [glp1, setGlp1] = useState(false);
+  const [code, setCode] = useState("");
+  const [status, setStatus] = useState<Status>({ state: "intake" });
+  const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let active = true;
+    fetch("/api/intake/status", { cache: "no-store" }).then(async response => {
+      if (!response.ok) throw new Error("Couldn’t check your verification. Please refresh to try again.");
+      return response.json();
+    }).then(data => { if (active) { setStatus(data); if (data.email) setEmail(data.email); } })
+      .catch(error => { if (active) setError(error.message); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, []);
+  async function submit(event: FormEvent, verify = false) {
+    event.preventDefault(); setBusy(true); setError("");
+    try {
+      const response = await fetch(verify ? "/api/verify-email" : "/api/intake", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(verify ? { code } : { name, email, pregnancy, glp1 }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Please try again.");
+      setStatus(data); setCode("");
+    } catch (error) { setError(error instanceof Error ? error.message : "Please try again."); }
+    finally { setBusy(false); }
+  }
+  if (loading) return <p role="status">Checking your verification…</p>;
+  if (status.state === "verified") return <section className="intake-panel">
+    <h1>{status.eligible ? "You’re verified." : "Your free report is already used."}</h1>
+    <p className="form-intro">{status.eligible ? "Your first report is still free. You can now photograph your product label." : "This email has already received its completed free report."}</p>
+    <p className="form-help">Email verified: {status.email}</p>
+    <ul className="preferences"><li>Pregnancy &amp; nursing mode: {status.pregnancy ? "On" : "Off"}</li><li>GLP-1 sensitive-skin mode: {status.glp1 ? "On" : "Off"}</li></ul>
+    {status.eligible && <a href="/scan" className="primary-button form-button">Photograph my label</a>}
+    {!status.eligible && <a href="/report" className="primary-button form-button">View my report</a>}
+    <a href="/" className="back-link">Back to Shelfie</a>
+  </section>;
+  return <section className="intake-panel">
+    <h1>{status.state === "pending" ? "Check your email." : "Your first report starts here."}</h1>
+    <p className="form-intro">{status.state === "pending" ? `Enter the six-digit code sent to ${status.email}. It expires in 10 minutes.` : "Your first report is free — no credit card needed."}</p>
+    {status.state === "intake" ? <form onSubmit={event => submit(event)}>
+      <label className="field">Name<input name="name" autoComplete="given-name" required maxLength={100} value={name} onChange={event => setName(event.target.value)} /></label>
+      <label className="field">Email<input name="email" type="email" autoComplete="email" required maxLength={254} value={email} onChange={event => setEmail(event.target.value)} /></label>
+      <fieldset className="mode-options"><legend>Report preferences</legend>
+        <label className="toggle-row"><span>Pregnancy &amp; nursing mode</span><input type="checkbox" role="switch" checked={pregnancy} onChange={event => setPregnancy(event.target.checked)} /></label>
+        <label className="toggle-row"><span>GLP-1 sensitive-skin mode</span><input type="checkbox" role="switch" checked={glp1} onChange={event => setGlp1(event.target.checked)} /></label>
+      </fieldset>
+      <p className="form-help">Verify your email before scanning. One completed free report per email.</p>
+      <button className="primary-button form-button" disabled={busy}>{busy ? "Sending your code…" : "Send verification code"}</button>
+    </form> : <form onSubmit={event => submit(event, true)}>
+      <label className="field">Verification code<input name="code" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} required value={code} onChange={event => setCode(event.target.value.replace(/\D/g, ""))} /></label>
+      <button className="primary-button form-button" disabled={busy}>{busy ? "Verifying…" : "Verify my email"}</button>
+      <p className="form-help">Didn’t get a code? Check your spam folder. You can request a new code after one minute.</p>
+      <button type="button" className="text-button" disabled={busy} onClick={() => { setStatus({ state: "intake" }); setError(""); setCode(""); }}>Request a new code or change email</button>
+    </form>}
+    {error && <p role="alert" className="form-error">{error}</p>}
+  </section>;
+}
+===== END FILE: src/components/intake-form.tsx =====
+
+
+===== BEGIN FILE: src/components/photo-capture.tsx =====
+"use client";
+import { useEffect, useRef, useState, type ChangeEvent } from "react";
+
+type Photo = { id: string; url: string; file?: File };
+export default function PhotoCapture() {
+  const camera = useRef<HTMLInputElement>(null);
+  const upload = useRef<HTMLInputElement>(null);
+  const urls = useRef(new Set<string>());
+  const [photos, setPhotos] = useState<Photo[]>([]);
+  const [revision, setRevision] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [reading, setReading] = useState(false);
+  const [changed, setChanged] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const [locked, setLocked] = useState(false);
+  const working = busy || reading;
+
+  useEffect(() => {
+    let active = true;
+    fetch("/api/photos", { cache: "no-store" }).then(async response => {
+      const data = await response.json();
+      if (!response.ok) {
+        if (active && [401, 409].includes(response.status)) setLocked(true);
+        throw new Error(data.error || "Couldn’t load your saved photos. Refresh to try again.");
+      }
+      if (active) { setPhotos(data.photos); setRevision(data.revision); if (data.photos.length) setMessage("Your label photos are saved. Your free report is still available."); }
+    }).catch(error => { if (active) setError(error.message); })
+      .finally(() => { if (active) setLoading(false); });
+    const ownedUrls = urls.current;
+    return () => { active = false; for (const url of ownedUrls) URL.revokeObjectURL(url); ownedUrls.clear(); };
+  }, []);
+
+  function select(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files || []);
+    event.target.value = ""; // permits selecting the same file for a retake
+    setError(""); setMessage("");
+    if (files.length + photos.length > 6) { setError("Use up to six photos of one product. Remove a photo before adding more."); return; }
+    if (files.some(file => file.size > 6 * 1024 * 1024)) { setError("Each photo must be 6 MB or smaller. Please choose a smaller photo."); return; }
+    if (files.length) setChanged(true);
+    setPhotos(current => [...current, ...files.map(file => { const url = URL.createObjectURL(file); urls.current.add(url); return { id: crypto.randomUUID(), url, file }; })]);
+  }
+  function remove(photo: Photo) {
+    if (photo.file) { URL.revokeObjectURL(photo.url); urls.current.delete(photo.url); }
+    setPhotos(current => current.filter(item => item.id !== photo.id)); setChanged(true); setMessage(""); setError("");
+  }
+  async function check() {
+    setBusy(true); setError(""); setMessage("");
+    try {
+      const body = new FormData();
+      body.set("revision", String(revision));
+      body.set("existingIds", JSON.stringify(photos.filter(photo => !photo.file).map(photo => photo.id)));
+      for (const photo of photos) if (photo.file) body.append("photos", photo.file);
+      const response = await fetch("/api/photos", { method: "POST", body });
+      const data = await response.json();
+      if (!response.ok) {
+        if (response.status === 401) setLocked(true);
+        if (response.status === 409) setError((data.error || "Your photos changed.") + " Refresh to continue.");
+        throw new Error(data.error || "Couldn’t check your photos. Please try again.");
+      }
+      for (const url of urls.current) URL.revokeObjectURL(url);
+      urls.current.clear(); setPhotos(data.photos); setRevision(data.revision); setChanged(false); setMessage(data.message);
+    } catch (error) { setError(error instanceof Error ? error.message : "Please try again."); }
+    finally { setBusy(false); }
+  }
+  async function openReport() {
+    setReading(true); setError("");
+    try {
+      const response = await fetch("/api/ingredients", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ revision }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        if (response.status === 401) setLocked(true);
+        throw new Error(data.error || "We couldn’t read your label. Please try again; your free report is unchanged.");
+      }
+      window.location.assign("/report");
+    } catch (error) { setError(error instanceof Error ? error.message : "Please try again."); }
+    finally { setReading(false); }
+  }
+  return <section className="intake-panel">
+    <h1>Let’s see the label.</h1>
+    <p className="form-intro">One product at a time. Clear photos help us read every word.</p>
+    <p className="photo-guide">Keep the label flat and facing the camera. Use bright light with no shadow. Get the whole ingredient list in frame.</p>
+    <p className="form-help">Long or curved label? Add overlapping photos of the same product so the whole list is covered. Changes are saved only after a successful check.</p>
+    <input ref={camera} className="visually-hidden" type="file" accept="image/*" capture="environment" tabIndex={-1} aria-hidden="true" onChange={select} />
+    <input ref={upload} className="visually-hidden" type="file" accept="image/*" multiple tabIndex={-1} aria-hidden="true" onChange={select} />
+    <div className="capture-actions">
+      <button className="primary-button form-button" disabled={working || loading || locked} onClick={() => camera.current?.click()}>Take a photo</button>
+      <button className="secondary-button" disabled={working || loading || locked} onClick={() => upload.current?.click()}>Upload from phone</button>
+    </div>
+    {loading && <p role="status" className="form-help">Loading your photos…</p>}
+    {!!photos.length && <>
+      <ol className="photo-list">{photos.map((photo, index) => <li key={photo.id}>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={photo.url} alt={`Label photo ${index + 1}`} />
+        <div><span>Photo {index + 1}</span><button className="text-button" disabled={working || locked} onClick={() => remove(photo)} aria-label={`Remove photo ${index + 1}`}>Remove / retake</button></div>
+      </li>)}</ol>
+      <button className="primary-button form-button" disabled={working || loading || locked} onClick={check}>{busy ? "Checking your photos…" : "Check label photos"}</button>
+      {revision > 0 && !changed && <div className="report-next">
+        <p className="form-help">Your first report is free. Showing the completed report uses the one free report for this email.</p>
+        <button className="primary-button form-button" disabled={working || loading || locked} onClick={openReport}>{reading ? "Reading every ingredient…" : "Show my free report"}</button>
+      </div>}
+    </>}
+    {error && <p className="form-error" role="alert">{error}</p>}
+    {message && <p className="photo-success" role="status">{message}</p>}
+    {locked && <a className="back-link" href="/intake">Return to email verification</a>}
+    <p className="form-help">Retakes never use your free report. Photos are sent securely to our vision provider for readability checks and label reading. Accepted photos are private and available for 24 hours.</p>
+  </section>;
+}
+===== END FILE: src/components/photo-capture.tsx =====
+
+
+===== BEGIN FILE: src/components/report-content.tsx =====
+import type { IngredientAnalysis } from "@/lib/ingredients/analyze";
+import { REPORT_DISCLAIMER, UNVERIFIED_INGREDIENT, type CompletedReport } from "@/lib/report";
+
+function IngredientLine({ item }: { item: IngredientAnalysis }) {
+  return <>
+    <h3>{item.labelName}</h3>
+    {item.match === "unmatched" ? <>
+      <p className="review-label">{UNVERIFIED_INGREDIENT}</p>
+      <p>Its role and cautions are unknown.</p>
+    </> : <p>{item.explanation}</p>}
+  </>;
+}
+
+export default function ReportContent({ report }: { report: CompletedReport }) {
+  const { analysis } = report;
+  const drying = analysis.ingredients.filter(item => item.alcoholBucket === "drying");
+  const fatty = analysis.ingredients.filter(item => item.alcoholBucket === "fatty");
+  const modes = [
+    { title: "Pregnancy & nursing mode", on: analysis.modes.pregnancy, kind: "pregnancy_nursing" },
+    { title: "GLP-1 sensitive-skin mode", on: analysis.modes.glp1, kind: "sensitive_skin" },
+  ] as const;
+  return <article className="report-content">
+    <header className="report-intro">
+      <p className="report-eyebrow">Your free first report</p>
+      <h1>Your shelf, explained.</h1>
+      <p className="form-intro">One product. {analysis.ingredients.length} ingredients, in the order printed on your label.</p>
+      <p className="report-disclaimer">{REPORT_DISCLAIMER}</p>
+      {analysis.unmatched.length > 0 && <div className="review-notice">
+        <h2>Some ingredients need review.</h2>
+        <p>We’ve kept the names as read. Missing explanations and cautions have not been filled in.</p>
+      </div>}
+    </header>
+
+    <section className="report-section" aria-labelledby="every-ingredient">
+      <h2 id="every-ingredient">Every ingredient</h2>
+      <ol className="report-ingredients">{analysis.ingredients.map((item, index) => <li key={index}>
+        <span className="ingredient-number" aria-hidden="true">{String(index + 1).padStart(2, "0")}</span>
+        <div><IngredientLine item={item} /></div>
+      </li>)}</ol>
+    </section>
+
+    <section className="report-section" aria-labelledby="drying-alcohols">
+      <h2 id="drying-alcohols">Drying alcohols</h2>
+      <p>These can leave skin feeling dry. The amount and the whole formula matter.</p>
+      {drying.length ? <ul className="report-detail-list">{drying.map((item, index) => <li key={index}><IngredientLine item={item} /><p className="report-tag">Flagged as drying</p></li>)}</ul>
+        : <p className="report-empty">No drying alcohols identified among the ingredients we could verify.</p>}
+    </section>
+
+    <section className="report-section" aria-labelledby="fatty-alcohols">
+      <h2 id="fatty-alcohols">Fatty alcohols</h2>
+      <p>These help soften skin and give moisturizers their creamy feel.</p>
+      {fatty.length ? <ul className="report-detail-list">{fatty.map((item, index) => <li key={index}><IngredientLine item={item} /><p className="report-tag">Moisturizer</p></li>)}</ul>
+        : <p className="report-empty">No fatty alcohols identified among the ingredients we could verify.</p>}
+    </section>
+
+    {modes.map(mode => {
+      const flagged = analysis.ingredients.flatMap(item => item.flags.filter(flag => flag.kind === mode.kind).map(flag => ({ name: item.labelName, message: flag.message })));
+      return <section className="report-section" key={mode.kind} aria-labelledby={mode.kind}>
+        <div className="report-section-heading"><h2 id={mode.kind}>{mode.title}</h2><span className="report-tag">{mode.on ? "On" : "Off"}</span></div>
+        {!mode.on ? <p className="report-empty">This mode was off for this report.</p> : <>
+          <p>{mode.kind === "pregnancy_nursing" ? "Pregnancy and nursing guidance can differ. These flags are prompts for a conversation with your doctor." : "Gentle cautions for skin that feels sensitive. These do not indicate a GLP-1 medication interaction."}</p>
+          {flagged.length ? <ul className="report-detail-list">{flagged.map((flag, index) => <li key={index}><h3>{flag.name}</h3><p>{flag.message}</p></li>)}</ul>
+            : <p className="report-empty">No matching mode flags in our knowledge base. Ingredient names alone do not establish suitability.</p>}
+        </>}
+      </section>;
+    })}
+
+    <aside className="report-notes" aria-label="About this report">
+      <p>Ingredient names alone do not show how the finished product will feel or perform.</p>
+      <p>This completed report is saved for your verified email. Reopening it does not use another report.</p>
+      <details><summary>References</summary><ul>{Object.values(analysis.sources).map(source => <li key={source.url}><a href={source.url} target="_blank" rel="noopener noreferrer">{source.title}</a></li>)}</ul></details>
+    </aside>
+  </article>;
+}
+===== END FILE: src/components/report-content.tsx =====
+
+
+===== BEGIN FILE: src/components/report-screen.tsx =====
+"use client";
+import { useEffect, useState } from "react";
+import ReportContent from "./report-content";
+import { isReportAnalysis, type CompletedReport } from "@/lib/report";
+
+export default function ReportScreen({ revision }: { revision: number }) {
+  const [report, setReport] = useState<CompletedReport | null>(null);
+  const [error, setError] = useState("");
+  const [retry, setRetry] = useState(0);
+  const [checking, setChecking] = useState(true);
+  useEffect(() => {
+    let active = true;
+    setChecking(true); setError("");
+    // Completion is a same-origin POST when this screen opens. Page GETs and
+    // prefetches never consume a report. The server makes repeats idempotent.
+    fetch("/api/report", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ revision }),
+    }).then(async response => {
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "We couldn’t open your report. Please try again.");
+      if (typeof data.id !== "string" || !Number.isFinite(data.completed) || !isReportAnalysis(data.analysis)) throw new Error("We couldn’t open your saved report. Please try again.");
+      if (active) setReport(data);
+    }).catch(error => { if (active) setError(error instanceof Error ? error.message : "Please try again."); })
+      .finally(() => { if (active) setChecking(false); });
+    return () => { active = false; };
+  }, [revision, retry]);
+  if (report) return <ReportContent report={report} />;
+  return <section className="intake-panel report-opening">
+    <h1>{checking ? "Opening your report." : "Let’s try that again."}</h1>
+    {checking && <p className="form-intro" role="status">Saving your completed report so you can come back to it.</p>}
+    {error && <>
+      <p className="form-error" role="alert">{error}</p>
+      <button className="primary-button form-button" onClick={() => setRetry(current => current + 1)}>Open my report again</button>
+      <a className="back-link" href="/scan">Back to label photos</a>
+    </>}
+  </section>;
+}
+===== END FILE: src/components/report-screen.tsx =====

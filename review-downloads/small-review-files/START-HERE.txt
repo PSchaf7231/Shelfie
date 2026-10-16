@@ -1,0 +1,23 @@
+SHELFIE: START HERE FOR GROKBOT'S REVIEW
+
+This folder splits the same 60 source/configuration/test files from the original review packet into smaller text attachments. No application code has changed. Every original source file is included once, with original file paths marked. Part 08 contains the dependency lockfile and is optional for the first review pass.
+
+WHAT SHELFIE DOES TODAY
+A mobile-first Next.js/TypeScript app collects name, email and mode preferences, verifies email, accepts photos of ONE product, rejects uncertain label reads, explains ingredients and shows a saved report. PostgreSQL enforces one completed free report per email across app instances. Failed reads and retakes do not consume it. Reopening retrieves the same report.
+
+RULES
+First report free, no payment or cancellation trial. Name/email precede scanning. Both Pregnancy & nursing and GLP-1 sensitive-skin modes change flags. Never guess label text or ingredient explanations. Separate drying alcohols from moisturizing fatty alcohols. Cosmetic information only; no diagnosis, treatment, cure, guaranteed outcome or safe/unsafe product verdict. Mode flags say commonly flagged, check with your doctor. Keep the navy/gold/ivory look, Cormorant Garamond and Jost fonts.
+
+WHAT IS STILL PENDING
+The original full-shelf vision includes product-to-product clash checks; those and multi-product shelf management are NOT implemented. The finite ingredient catalog is not exhaustive or clinically reviewed. Model confidence and agreement are not a proof of OCR accuracy. Hosted PostgreSQL and live email settings still need connecting; the working OpenAI key is excluded from this export. Nothing is published to Vercel. Read FULL-REVIEW-BRIEF.md for the full scope, validation record and limitations.
+
+RECORDED VALIDATION
+37 tests, TypeScript and production build passed during the storage build. Production HTTP checks confirmed one-time report completion and saved-report/credit persistence across an app-process restart. Those are recorded build results, not a new independent audit performed while packaging.
+
+SUGGESTED REVIEW
+Read one numbered part at a time, then combine the findings. Part 01 is project setup; 02 is the interface; 03 is server endpoints; 04 is label reading and ingredient rules; 05 is storage/migrations; 06-07 are tests; 08 is dependency metadata. Ask for the next file if you cannot access it. Do not assume a file is missing from the project just because you have not read its part.
+
+Give a candid review: confirmed bugs, unmet requirements and material assumptions, ranked by severity. Cite the original file path and line when possible. Recommend the smallest fixes within the existing project. Explain any concrete reason a rewrite would actually be needed. Do not change code or publish anything as part of this review.
+
+SHARING
+Upload this folder to Google Drive and give Grokbot its link if he can read that Drive folder. Otherwise attach START-HERE.txt and then one numbered file per message. Folder sharing alone does not remove a model's context or file-reading limits. The export has no private keys, databases, real uploads, outbox messages, or private environment settings.
