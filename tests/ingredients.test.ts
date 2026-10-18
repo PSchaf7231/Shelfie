@@ -25,6 +25,18 @@ test('rejects unreadable, incomplete, malformed or unverified lists without fixi
   assert.equal(validateTranscript(printedPeriod).ingredients[1].name, 'Glycerin');
   assert.throws(() => validateTranscript({ ...printedPeriod, ingredients: good.ingredients }), /reliably/);
 });
+test('a printed Ingredients heading on its own line does not become part of the first ingredient', () => {
+  const text = 'Aqua, Alcohol Denat.,\nSalicylic Acid (2%), Sodium Chloride.';
+  const ingredients = ['Aqua', 'Alcohol Denat.', 'Salicylic Acid (2%)', 'Sodium Chloride.'].map(text => ({ text, confidence: 0.99 }));
+  for (const heading of ['INGREDIENTS\n', 'Ingredients \r\n', 'Ingredients:\n']) {
+    const rawText = heading + text;
+    const result = validateTranscript({ rawText, complete: true, certain: true, confidence: 0.99, ingredients });
+    assert.equal(result.transcript.rawText, rawText);
+    assert.deepEqual(result.ingredients.map(item => item.raw), ingredients.map(item => item.text));
+    assert.equal(result.ingredients[2].concentrationPercent, 2);
+    assert.throws(() => validateTranscript({ ...result.transcript, ingredients: ingredients.map((item, index) => index === 3 ? { ...item, text: 'Sodium Chloride' } : item) }), /reliably/);
+  }
+});
 test('drying and fatty alcohol buckets are disjoint and aromatic/preservative names do not get substring matches', () => {
   const result = analyzeIngredients(transcript('Ethanol, Isopropyl Alcohol, Alcohol Denat., Cetyl Alcohol, Cetearyl Alcohol, Stearyl Alcohol, Benzyl Alcohol, Phenoxyethanol'), modes);
   assert.deepEqual(result.alcohols.drying, ['Ethanol', 'Isopropyl Alcohol', 'Alcohol Denat.']);

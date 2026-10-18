@@ -13,7 +13,7 @@ export function parseIngredientList(rawText: string): ParsedIngredient[] {
     // Both printed sections are required; never silently discard an active list.
     if (!/^active ingredients?\s*:/i.test(text) || (text.match(/inactive ingredients?\s*:/gi)?.length ?? 0) !== 1) throw new LabelReadError();
     text = text.replace(/^active ingredients?\s*:/i, "").replace(/\s*inactive ingredients?\s*:/i, ";");
-  } else text = text.replace(/^ingredients?\s*:\s*/i, "");
+  } else text = text.replace(/^ingredients?(?:\s*:\s*|[ \t]*\r?\n\s*)/i, "");
   if (/\bingredients?\s*:/i.test(text)) throw new LabelReadError();
   const entries: string[] = [];
   let start = 0;
