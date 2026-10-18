@@ -34,5 +34,8 @@ export async function photoForm(request: Request) {
   const revision = Number(revisionValue);
   if (typeof revisionValue !== "string" || !/^\d+$/.test(revisionValue) || !Number.isSafeInteger(revision)) throw new IntakeError("Please refresh your photos and try again.");
   if (files.length + existingIds.length < 1 || files.length + existingIds.length > MAX_PHOTOS) throw new IntakeError("Choose between one and six photos of this product.");
-  return { files: files as File[], existingIds, revision };
+  const reviewConsent = form.get("reviewConsent") === "photo-review-v1";
+  const reviewReason = form.get("reviewReason");
+  return { files: files as File[], existingIds, revision, reviewConsent,
+    reviewReason: typeof reviewReason === "string" ? reviewReason : "" };
 }

@@ -32,7 +32,11 @@ export default function PhotoCapture() {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [locked, setLocked] = useState(false);
-  const working = busy || reading || preparing || loadFailed;
+  const [sharing, setSharing] = useState(false);
+  const [reviewError, setReviewError] = useState("");
+  const [shared, setShared] = useState<{ reference: string; selection: string } | null>(null);
+  const reviewSelection = `${photos.map(photo => photo.id).join(",")}:${error}`;
+  const working = busy || reading || preparing || sharing || loadFailed;
 
   useEffect(() => {
     let active = true;
@@ -142,6 +146,26 @@ export default function PhotoCapture() {
     if (mounted.current) { setPreparing(false); setMessage(stored ? notice : KEEP_OPEN); }
   }
 
+  async function rotatePhoto(photo: Photo) {
+    setPreparing(true); setError(""); setMessage("");
+    try {
+      let file = photo.file;
+      if (!file) {
+        const response = await fetch(photo.url, { cache: "no-store" });
+        if (!response.ok) throw new PhotoClientError("We couldn’t open this saved photo. Your other photos are still here.");
+        file = new File([await response.blob()], "ingredient-label.jpg", { type: "image/jpeg" });
+      }
+      const turned = await preparePhotoForUpload(file, true);
+      if (!mounted.current) return;
+      const url = URL.createObjectURL(turned); urls.current.add(url);
+      const next = addLabelPhotos(current.current, [{ id: crypto.randomUUID(), url, file: turned }], photo.id);
+      display(next); setChanged(true);
+      const stored = await persist(next);
+      if (mounted.current) setMessage(stored ? "Photo rotated. Your other photos are still here. Upload and check when you’re ready." : KEEP_OPEN);
+    } catch (error) { if (mounted.current) setError(error instanceof PhotoClientError ? error.message : "We couldn’t rotate this photo. Your photos are still here."); }
+    finally { if (mounted.current) setPreparing(false); }
+  }
+
   async function check() {
     setBusy(true); setError(""); setMessage("");
     try {
@@ -179,10 +203,38 @@ export default function PhotoCapture() {
     } finally { if (mounted.current) setReading(false); }
   }
 
+  async function shareForReview() {
+    setSharing(true); setReviewError("");
+    try {
+      const body = new FormData();
+      body.set("revision", String(savedRevision.current));
+      body.set("existingIds", JSON.stringify(current.current.filter(photo => !photo.file).map(photo => photo.id)));
+      body.set("reviewConsent", "photo-review-v1");
+      body.set("reviewReason", error);
+      for (const photo of current.current) if (photo.file) body.append("photos", photo.file);
+      const fallback = "We couldn’t share these photos. Your photos and free report are unchanged. Please try again.";
+      const data = await readPhotoResponse(await fetch("/api/photo-reviews", { method: "POST", body }), fallback) as { reference?: string };
+      if (!data || !/^[a-f0-9-]{36}$/.test(data.reference || "")) throw new PhotoClientError(fallback);
+      if (mounted.current) setShared({ reference: data.reference!, selection: reviewSelection });
+    } catch (error) {
+      if (mounted.current) setReviewError(error instanceof PhotoClientError ? error.message : "Photo sharing is unavailable. Your photos are still here.");
+    } finally { if (mounted.current) setSharing(false); }
+  }
+
+  async function deleteReview() {
+    if (!shared) return;
+    setSharing(true); setReviewError("");
+    try {
+      await readPhotoResponse(await fetch("/api/photo-reviews", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reference: shared.reference }) }), "We couldn’t delete the shared copy. Please try again.");
+      if (mounted.current) setShared(null);
+    } catch (error) { if (mounted.current) setReviewError(error instanceof PhotoClientError ? error.message : "We couldn’t delete the shared copy. Please try again."); }
+    finally { if (mounted.current) setSharing(false); }
+  }
+
   return <section className="intake-panel">
     <h1>Let’s see the label.</h1>
     <p className="form-intro">Photograph the ingredient list of one product.</p>
-    <p className="photo-guide">Use bright, even light without a shadow or glare. Hold the label facing the camera and fill the frame with the ingredient list.</p>
+    <p className="photo-guide">Use bright, even light without a shadow or glare. Fill the frame with the ingredient list. Rest your phone or elbows on a steady surface if that helps.</p>
     <p className="form-help">Curved bottle or long list? Take one clear photo, turn the bottle a little, then add another. Include a few of the same words in both photos so we can follow the whole list.</p>
     <input ref={camera} id="camera-photo" className="visually-hidden" type="file" accept="image/*" capture="environment" tabIndex={-1} aria-hidden="true" onChange={event => select(event, true)} />
     <input ref={upload} id="phone-photos" className="visually-hidden" type="file" accept="image/*" multiple tabIndex={-1} aria-hidden="true" onChange={event => select(event)} />
@@ -198,6 +250,7 @@ export default function PhotoCapture() {
         <img src={photo.url} alt={`Label photo ${index + 1}`} />
         <div><span>Photo {index + 1}</span><div className="photo-controls">
           <button className="text-button" disabled={working || locked} onClick={() => openCamera(photo.id)} aria-label={`Retake photo ${index + 1}`}>Retake</button>
+          <button className="text-button" disabled={working || locked} onClick={() => rotatePhoto(photo)} aria-label={`Rotate photo ${index + 1}`}>Rotate</button>
           <button className="text-button" disabled={working || locked} onClick={() => changeSelection(current.current.filter(item => item.id !== photo.id), "Photo removed. Your other photos are still here.")} aria-label={`Remove photo ${index + 1}`}>Remove</button>
         </div></div>
       </li>)}</ol>
@@ -209,6 +262,15 @@ export default function PhotoCapture() {
       </div>}
     </>}
     {error && <p className="form-error" role="alert">{error}</p>}
+    {error && !!photos.length && !locked && <div className="photo-review">
+      <p className="form-help">Think this photo should work? You can share these label photos and the message with Shelfie’s support team for troubleshooting. The shared copy is private and available for review for 24 hours. Sharing is optional and never uses your free report.</p>
+      <button className="secondary-button" disabled={working || shared?.selection === reviewSelection} onClick={shareForReview}>{sharing ? "Sharing…" : shared?.selection === reviewSelection ? "Shared for review" : "Share photos for review"}</button>
+    </div>}
+    {shared && <div className="photo-review-receipt" role="status">
+      <p>Shared for review. This does not send a reply automatically. If you contact us, include this reference: <span className="review-reference">{shared.reference}</span></p>
+      <button className="text-button" disabled={working} onClick={deleteReview}>Delete shared copy</button>
+    </div>}
+    {reviewError && <p className="form-error" role="alert">{reviewError}</p>}
     {message && <p className="photo-success" role="status">{message}</p>}
     {locked && <a className="back-link" href="/intake">Return to email verification</a>}
     <p className="form-help">Retakes never use your free report. We’ll ask for clearer photos if we can’t read the label. Photos are sent securely to our vision provider for label checks and reading. Checked photos are private and available for 24 hours.</p>

@@ -121,7 +121,7 @@ test('PostgreSQL migrations can repeat and run concurrently without deleting sav
     const report = await store.completeIngredientReport(token, 1, CATALOG_VERSION, now);
     await Promise.all(Array.from({ length: 4 }, () => migrateDatabase(fixture.url)));
     assert.deepEqual(await store.getReport(token, now), report);
-    await inspect.read(async db => { assert.equal((await db.query('SELECT COUNT(*) AS total FROM schema_migrations')).rows[0].total, '1'); });
+    await inspect.read(async db => { assert.deepEqual((await db.query('SELECT version FROM schema_migrations ORDER BY version')).rows.map(row => row.version), ['001_initial', '002_photo_reviews']); });
   } finally { await inspect.close(); await fixture.cleanup(); }
 });
 

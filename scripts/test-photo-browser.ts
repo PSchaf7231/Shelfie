@@ -40,6 +40,21 @@ async function main() {
     let verified = true;
     let loadError = false;
     const bodies: { size: number; count: number }[] = [];
+    let reviewShares = 0, reviewDeletes = 0;
+    const reviewReference = randomUUID();
+    await page.route("**/api/photo-reviews", async route => {
+      if (route.request().method() === "DELETE") {
+        assert.equal(JSON.parse(route.request().postData()!).reference, reviewReference);
+        reviewDeletes++; await route.fulfill({ json: { deleted: true } }); return;
+      }
+      reviewShares++;
+      const request = new Request(origin + "/api/photo-reviews", { method: "POST", headers: { "Content-Type": route.request().headers()["content-type"] }, body: new Uint8Array(route.request().postDataBuffer()!) });
+      const form = await request.formData();
+      assert.equal(form.get("reviewConsent"), "photo-review-v1");
+      assert.match(String(form.get("reviewReason")), /too large/);
+      assert.equal(form.getAll("photos").length, 2);
+      await route.fulfill({ json: { reference: reviewReference, expiresAt: Date.now() + 86400000 } });
+    });
     await page.route("**/api/photos/*", route => route.fulfill({ status: 200, contentType: "image/jpeg", body: jpeg }));
     await page.route("**/api/photos", async route => {
       if (!verified) { await route.fulfill({ status: 401, json: { error: "Verify your email before adding photos." } }); return; }
@@ -80,6 +95,15 @@ async function main() {
     assert.equal((await sources())[0], first);
     console.log("PASS: taking a second photo appends it without replacing the first");
 
+    const beforeTurn = await sources();
+    await page.getByRole("button", { name: "Rotate photo 1", exact: true }).click();
+    await page.waitForFunction(() => document.querySelector(".photo-success")?.textContent?.includes("Photo rotated"));
+    await ready();
+    assert.notEqual((await sources())[0], beforeTurn[0]); assert.equal((await sources())[1], beforeTurn[1]);
+    await page.waitForFunction(() => { const img=document.querySelector<HTMLImageElement>(".photo-list img"); return img && img.naturalHeight>img.naturalWidth; });
+    assert.equal(await page.locator(".photo-list li").count(), 2);
+    console.log("PASS: rotation turns only the selected image without another camera capture or losing other photos");
+
     await page.reload(); await count(2); await ready();
     assert.match(await page.locator(".photo-success").innerText(), /unfinished photos are back/);
     console.log("PASS: both pending photos survive a camera-style page reload");
@@ -101,6 +125,18 @@ async function main() {
     await page.waitForFunction(() => document.querySelector('[role="alert"]')?.textContent?.includes("too large to send together"));
     assert.equal(await page.locator(".photo-list li").count(), 2);
     assert.doesNotMatch(await page.locator('[role="alert"]').innerText(), /Unexpected token|JSON/);
+    assert.equal(reviewShares, 0);
+    await page.getByRole("button", { name: "Share photos for review", exact: true }).click();
+    await page.locator(".photo-review-receipt").waitFor();
+    assert.equal(reviewShares, 1);
+    assert.equal(await page.getByRole("button", { name: "Shared for review", exact: true }).isDisabled(), true);
+    assert.equal(await page.locator(".photo-list li").count(), 2);
+    assert.equal(await page.getByRole("button", { name: "Show my free report" }).count(), 0);
+    await page.getByRole("button", { name: "Delete shared copy", exact: true }).click();
+    await page.locator(".photo-review-receipt").waitFor({ state: "detached" });
+    assert.equal(reviewDeletes, 1); assert.equal(await page.locator(".photo-list li").count(), 2);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    console.log("PASS: review photos are shared only after an explicit tap; receipt, deletion and mobile layout work without changing the scan");
     await page.reload(); await count(2); await ready();
     mode = "html"; await checkPhotos();
     await page.waitForFunction(() => document.querySelector('[role="alert"]')?.textContent?.includes("Your photos are still here"));

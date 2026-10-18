@@ -117,6 +117,25 @@ and strict JSON schemas. `LABEL_READER_MODEL` optionally overrides both stages. 
 literal ingredient transcription. Product scoring is not built.
 The automated tests use provider fixtures, not live model calls.
 
+Rejected checks offer an optional **Share photos for review** button. The button
+clearly requests permission to share the selected label photos and error with the
+support team; normal uploads do not create review copies. Sharing uses no report
+credit and makes no email or vision request. Copies are decoded, stripped of
+metadata, limited to six images below 600 KB each and 1600 pixels, and stored
+privately for review with a receipt. Users can delete their shared copy. Each
+verified email can keep three active review submissions. Copies expire after
+24 hours and are purged on the next sharing or private review operation; there
+is no background cleanup scheduler. There is no public review-list or image API.
+
+Support can list current consented checks with `node --import tsx scripts/review-photos.ts`
+using the private database connection. Supplying one receipt ID exports only that
+unexpired check's images to a private temporary directory for inspection. This
+does not deliver images into a Codex conversation or create automatic monitoring
+or replies. Use the cloud database preload described in saved setup instructions
+when running the tool from Codex. Apply migration `002_photo_reviews` before
+deploying this feature. The Rotate button reuses an existing photo and preserves
+the other selected images; rotated photos still pass the ordinary quality gate.
+
 Accepted normalized photos are stored privately in PostgreSQL, with authenticated
 preview endpoints and 24-hour expiry. An email's expired records are purged on its subsequent
 photo access, not by a background scheduler. Rejected retakes leave the last

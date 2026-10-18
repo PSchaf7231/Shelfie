@@ -124,6 +124,32 @@ export class IntakeStore {
       return this.photoBatchOn(database, token, now);
     });
   }
+  async sharePhotoReview(token: string, images: { bytes: Buffer; width: number; height: number }[], reason: string, now = Date.now()) {
+    if (!reason.trim() || reason.length > 400 || !images.length || images.length > 6 || images.some(image => !image.bytes.length || image.bytes.length > 600000 || image.width < 1 || image.height < 1 || image.width > 1600 || image.height > 1600)) throw new IntakeError("Choose up to six label photos to share for review.");
+    return this.database.transaction(async database => {
+      await this.lockEmail(database, token, now);
+      const { email } = await this.requireEligibleOn(database, token, now);
+      await database.query("DELETE FROM photo_reviews WHERE expires <= $1", [now]);
+      const count = (await database.query<{ total: string }>("SELECT COUNT(*) AS total FROM photo_reviews WHERE email = $1", [email])).rows[0];
+      if (Number(count.total) >= 3) throw new IntakeError("You’ve already shared three photo checks for review today. Please keep their reference numbers.", 429);
+      const reference = randomUUID(), expiresAt = now + 86400000;
+      await database.query("INSERT INTO photo_reviews (id, email, reason, consent_version, created, expires) VALUES ($1, $2, $3, 'photo-review-v1', $4, $5)", [reference, email, reason.trim(), now, expiresAt]);
+      for (let position = 0; position < images.length; position++) {
+        const image = images[position];
+        await database.query("INSERT INTO photo_review_images (review_id, position, bytes, width, height) VALUES ($1, $2, $3, $4, $5)", [reference, position, image.bytes, image.width, image.height]);
+      }
+      return { reference, expiresAt };
+    });
+  }
+  async deletePhotoReview(token: string, reference: string, now = Date.now()) {
+    if (!/^[a-f0-9-]{36}$/.test(reference)) throw new IntakeError("This review reference is invalid.");
+    await this.database.transaction(async database => {
+      await this.lockEmail(database, token, now);
+      const status = await this.statusOn(database, token, now);
+      if (status.state !== "verified") throw new IntakeError("Verify your email first.", 401);
+      await database.query("DELETE FROM photo_reviews WHERE id = $1 AND email = $2", [reference, status.email]);
+    });
+  }
   private async ingredientAnalysisOn(database: Queryable, token: string, revision: number, catalogVersion: string, now: number): Promise<ProductAnalysis | null> {
     const session = await this.requireEligibleOn(database, token, now);
     const batch = await this.photoBatchOn(database, token, now);

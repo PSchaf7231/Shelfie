@@ -39,7 +39,7 @@ export function addLabelPhotos(current: Photo[], incoming: Photo[], replaceId?: 
   return [...current, ...incoming];
 }
 
-export async function preparePhotoForUpload(file: File): Promise<File> {
+export async function preparePhotoForUpload(file: File, turnClockwise = false): Promise<File> {
   if (!file.size || file.size > MAX_SOURCE_PHOTO_BYTES) throw new PhotoClientError("This photo is too large to open. Take a closer photo of the ingredient list and try again.");
   const url = URL.createObjectURL(file);
   const image = new Image();
@@ -52,14 +52,17 @@ export async function preparePhotoForUpload(file: File): Promise<File> {
     });
     if (Math.min(image.naturalWidth, image.naturalHeight) < 480) throw new PhotoClientError("This photo is too small to read the label. Take a closer, higher-resolution photo.");
     const scale = Math.min(1, MAX_PHOTO_EDGE / Math.max(image.naturalWidth, image.naturalHeight));
-    canvas.width = Math.round(image.naturalWidth * scale);
-    canvas.height = Math.round(image.naturalHeight * scale);
+    const width = Math.round(image.naturalWidth * scale), height = Math.round(image.naturalHeight * scale);
+    canvas.width = turnClockwise ? height : width;
+    canvas.height = turnClockwise ? width : height;
     if (Math.min(canvas.width, canvas.height) < 480) throw new PhotoClientError("Take a closer photo of one section of the ingredient list. Add overlapping photos for a long label.");
     const context = canvas.getContext("2d", { alpha: false });
     if (!context) throw new PhotoClientError("Your phone couldn’t prepare this photo. Please try another photo.");
     context.fillStyle = "#ffffff";
     context.fillRect(0, 0, canvas.width, canvas.height);
-    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    context.translate(canvas.width / 2, canvas.height / 2);
+    if (turnClockwise) context.rotate(Math.PI / 2);
+    context.drawImage(image, -width / 2, -height / 2, width, height);
     // Keep label detail. If these encodings are too large, ask for a closer shot
     // instead of repeatedly shrinking the text until it cannot be read.
     for (const quality of [0.94, 0.9, 0.85]) {
