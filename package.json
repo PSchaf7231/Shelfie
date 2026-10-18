@@ -8,6 +8,7 @@
     "start": "next start --hostname 0.0.0.0",
     "typecheck": "tsc --noEmit",
     "test": "tsx scripts/test.ts",
+    "test:photos": "tsx scripts/test-photo-browser.ts",
     "db:migrate": "tsx scripts/migrate.ts",
     "db:import-sqlite": "tsx scripts/import-sqlite.ts"
   },
@@ -27,6 +28,8 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "embedded-postgres": "^18.4.0-beta.17",
+    "esbuild": "0.28.2",
+    "playwright-core": "1.64.1",
     "tsx": "^4.23.15",
     "typescript": "^5.9.0"
   },

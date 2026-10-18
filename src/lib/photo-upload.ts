@@ -1,10 +1,10 @@
 import { IntakeError } from "./intake";
-import { MAX_PHOTO_BYTES, MAX_PHOTOS } from "./photo-quality";
+import { MAX_PHOTO_BYTES, MAX_PHOTOS, MAX_UPLOAD_BYTES, PHOTO_UPLOAD_TOO_LARGE } from "./photo-limits";
 
 export async function photoForm(request: Request) {
-  const limit = MAX_PHOTOS * MAX_PHOTO_BYTES + 65536;
+  const limit = MAX_UPLOAD_BYTES;
   const declared = request.headers.get("content-length");
-  if (declared && Number(declared) > limit) throw new IntakeError("These photos are too large. Use up to six photos, 6 MB each.", 413);
+  if (declared && Number(declared) > limit) throw new IntakeError(PHOTO_UPLOAD_TOO_LARGE, 413);
   if (!request.body) throw new IntakeError("Choose a photo first.");
   const reader = request.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -14,7 +14,7 @@ export async function photoForm(request: Request) {
       const { done, value } = await reader.read();
       if (done) break;
       length += value.byteLength;
-      if (length > limit) { await reader.cancel(); throw new IntakeError("These photos are too large.", 413); }
+      if (length > limit) { await reader.cancel(); throw new IntakeError(PHOTO_UPLOAD_TOO_LARGE, 413); }
       chunks.push(value);
     }
   } finally { reader.releaseLock(); }

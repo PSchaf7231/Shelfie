@@ -6,6 +6,9 @@ Use Node.js 24 or later. Run `npm ci`, configure `DATABASE_URL` in private
 environment settings (or ignored `.env.local` for development), run
 `npm run db:migrate`, then `npm run dev`.
 Checks: `npm test`, `npm run typecheck`, and `npm run build`.
+For the mobile photo-flow regression, run `npm run test:photos` with Chromium
+installed (`CHROMIUM_PATH` overrides the default `/usr/bin/chromium`). This uses
+synthetic images and mocked APIs; it sends no email or vision requests.
 
 Intake at `/intake` collects name, email, and both preferences. Codes expire in
 10 minutes, allow five attempts, and are tied to the requesting browser.
@@ -76,9 +79,25 @@ never consume a report. Clients cannot supply report content or completion state
 `/scan` is gated on the server by email verification and free-report eligibility.
 The camera button uses the phone's rear-camera file picker when supported;
 the upload button supports multiple existing photos. Desktop browsers may use
-an ordinary file picker for both. One batch covers one product, up to six photos
-at 6 MB each. For long labels, include overlapping sections with the printed
-beginning and end visible. Removal stages changes until the next successful check.
+an ordinary file picker for both. One batch covers one product, up to six photos.
+The browser prepares each image as a metadata-free JPEG with a maximum edge of
+2400 pixels and a 600,000-byte budget, keeping six photos below the 4,000,000-byte
+total upload limit, including multipart metadata. It opens source images up to
+20 MiB and asks for a closer shot if the image cannot fit without further loss
+of label detail. Server decoding and vision checks remain mandatory.
+For curved or long labels, include overlapping sections with the printed
+beginning and end visible. Adding an angle keeps earlier photos; Retake replaces
+only the chosen photo after its replacement is ready. Canceling keeps the original.
+Removal stages changes until the next successful check.
+
+Pending prepared photos are kept in this browser's IndexedDB for up to 24 hours,
+scoped to an opaque identifier for the verified browser session. Reload restores
+them only after server authorization and only if their base photo revision still
+matches. Expired drafts are removed on subsequent draft access; successful checks
+clear the pending draft. A different session cannot restore the previous draft.
+Storage failure leaves photos usable in memory and asks the user to keep the page
+open. Upload failures retain the selection and use plain-language messages even
+when the hosting platform returns a non-JSON error page.
 
 Uploads are authorized before reading bytes. Sharp verifies and decodes supported
 still images, enforces a 24-megapixel input limit, removes metadata, and rejects
@@ -87,7 +106,8 @@ then reviews each photo for readability, glare, cropped text, confidence, produc
 consistency, and complete coverage across the batch. Partial photos are accepted
 only when intact overlapping text establishes complete coverage. Pixel metrics
 alone never authorize acceptance. Uncertain or malformed verdicts, service failures,
-and absent credentials fail closed. Rejected images are not persisted.
+and absent credentials fail closed. Rejected images are not saved on the server;
+the browser retains its pending selection so it can be corrected and retried.
 
 Set `LABEL_READER_API_KEY` securely for OpenAI's API. `LABEL_READER_MODEL` defaults
 to `gpt-4.1-mini`, which supports vision and strict JSON schemas. Allow HTTPS to

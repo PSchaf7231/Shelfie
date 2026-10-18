@@ -1,8 +1,8 @@
 import sharp from "sharp";
 import { IntakeError } from "./intake";
+import { MAX_PHOTOS, MAX_PHOTO_BYTES } from "./photo-limits";
 
-export const MAX_PHOTOS = 6;
-export const MAX_PHOTO_BYTES = 6 * 1024 * 1024;
+export { MAX_PHOTOS, MAX_PHOTO_BYTES } from "./photo-limits";
 export type PreparedPhoto = { bytes: Buffer; width: number; height: number };
 export class QualityError extends IntakeError {
   constructor(message: string) { super(message, 422); }
@@ -43,12 +43,15 @@ export function enforceVerdict(value: unknown, count: number) {
   for (let i = 0; i < count; i++) {
     const p = v.photos[i];
     if (!p || p.index !== i || [p.blurry, p.dark, p.croppedText, p.glare, p.readable].some(flag => typeof flag !== "boolean") || !Number.isFinite(p.confidence) || p.confidence < 0 || p.confidence > 1) throw new IntakeError("We couldn’t confirm photo quality. Please try again; your free report is unchanged.", 503);
+  }
+  if (!v.sameProduct) throw new QualityError("We couldn’t confirm these photos show the same product. Keep one product’s photos together, or choose Start a different product.");
+  for (let i = 0; i < count; i++) {
+    const p = v.photos[i];
     if (p.dark) throw new QualityError(`Photo ${i + 1} is too dark or shadowed. Retake it in bright, even light.`);
     if (p.blurry) throw new QualityError(`Photo ${i + 1} is blurry. Hold the label flat and steady, then retake it.`);
     if (p.croppedText) throw new QualityError(`Photo ${i + 1} cuts off label text. Include whole words and overlap any additional photos.`);
     if (p.glare || !p.readable || p.confidence < 0.98) throw new QualityError(`Photo ${i + 1} isn’t clear enough to read confidently. Move away from glare and take a clearer photo.`);
   }
-  if (!v.sameProduct) throw new QualityError("Use photos of one product at a time so labels don’t get mixed up.");
   if (!v.completeIngredientList || !v.certain) throw new QualityError("We can’t confirm the whole ingredient list. Add a clearer photo of the missing section, with overlap between photos. We won’t guess.");
 }
 

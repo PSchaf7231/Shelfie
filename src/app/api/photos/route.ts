@@ -1,16 +1,24 @@
 import type { NextRequest } from "next/server";
+import { createHash } from "node:crypto";
 import { IntakeError, intakeStore } from "@/lib/intake";
 import { failure, reply, sameOrigin, SESSION_COOKIE } from "@/lib/intake-http";
 import { checkLabelQuality, preparePhoto, type PreparedPhoto } from "@/lib/photo-quality";
 import { photoForm } from "@/lib/photo-upload";
 
 export const runtime = "nodejs";
+export const maxDuration = 60;
 let activeUploads = 0;
-function describe(batch: Awaited<ReturnType<ReturnType<typeof intakeStore>["photoBatch"]>>) {
-  return { revision: batch.revision, photos: batch.photos.map(photo => ({ id: photo.id, width: photo.width, height: photo.height, url: `/api/photos/${photo.id}` })) };
+function describe(batch: Awaited<ReturnType<ReturnType<typeof intakeStore>["photoBatch"]>>, token: string) {
+  // Domain-separated identifier for this verified browser's local photo draft.
+  // It is not an authentication token and cannot be used to retrieve server data.
+  const draftKey = createHash("sha256").update(`shelfie-photo-draft:${token}`).digest("hex");
+  return { revision: batch.revision, draftKey, photos: batch.photos.map(photo => ({ id: photo.id, width: photo.width, height: photo.height, url: `/api/photos/${photo.id}` })) };
 }
 export async function GET(request: NextRequest) {
-  try { return reply(describe(await intakeStore().photoBatch(request.cookies.get(SESSION_COOKIE)?.value || ""))); }
+  try {
+    const token = request.cookies.get(SESSION_COOKIE)?.value || "";
+    return reply(describe(await intakeStore().photoBatch(token), token));
+  }
   catch (error) { return failure(error); }
 }
 export async function POST(request: NextRequest) {
@@ -43,7 +51,7 @@ export async function POST(request: NextRequest) {
     }
     await checkLabelQuality(images);
     // Recheck eligibility and revision inside the save transaction after async work.
-    return reply({ ...describe(await store.savePhotos(token, revision, images)), message: "Photos passed the readability check and are saved. Your free report is still available." });
+    return reply({ ...describe(await store.savePhotos(token, revision, images), token), message: "We can read these label photos, and they’re saved. Your free report is still available." });
   } catch (error) { return failure(error); }
   finally { if (admitted) activeUploads--; }
 }

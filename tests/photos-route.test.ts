@@ -48,6 +48,8 @@ test('upload route authorizes, gates every photo, saves privately and leaves eli
         const accepted = await POST(request(token, [image, image]));
         assert.equal(accepted.status, 200);
         const saved = await accepted.json();
+        assert.match(saved.draftKey, /^[a-f0-9]{64}$/);
+        assert.notEqual(saved.draftKey, token);
         assert.equal(saved.photos.length, 2);
         assert.equal(saved.revision, 1);
         const id = saved.photos[0].id;
