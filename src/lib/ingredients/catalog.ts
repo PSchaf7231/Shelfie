@@ -1,4 +1,4 @@
-export const CATALOG_VERSION = '2026-10-10.2';
+export const CATALOG_VERSION = '2026-10-18.3';
 export const sources = {
   cosing: { title: 'European Commission CosIng ingredient-function reference', url: 'https://ec.europa.eu/growth/tools-databases/cosing/' },
   pregnancy: { title: 'American Academy of Dermatology: skin care during pregnancy', url: 'https://www.aad.org/public/everyday-care/skin-care-secrets/routine/pregnancy' },

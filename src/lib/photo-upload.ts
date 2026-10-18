@@ -1,7 +1,7 @@
 import { IntakeError } from "./intake";
 import { MAX_PHOTO_BYTES, MAX_PHOTOS, MAX_UPLOAD_BYTES, PHOTO_UPLOAD_TOO_LARGE } from "./photo-limits";
 
-export async function photoForm(request: Request) {
+export async function uploadForm(request: Request) {
   const limit = MAX_UPLOAD_BYTES;
   const declared = request.headers.get("content-length");
   if (declared && Number(declared) > limit) throw new IntakeError(PHOTO_UPLOAD_TOO_LARGE, 413);
@@ -21,6 +21,11 @@ export async function photoForm(request: Request) {
   let form: FormData;
   try { form = await new Request(request.url, { method: "POST", headers: { "Content-Type": request.headers.get("content-type") || "" }, body: Buffer.concat(chunks) }).formData(); }
   catch { throw new IntakeError("We couldn’t open this upload. Please choose the photos again."); }
+  return form;
+}
+
+export async function photoForm(request: Request) {
+  const form = await uploadForm(request);
   const files = form.getAll("photos");
   if (files.some(file => !(file instanceof File))) throw new IntakeError("Please choose image files.");
   if (files.length > MAX_PHOTOS || files.some(file => (file as File).size > MAX_PHOTO_BYTES)) throw new IntakeError("Use up to six photos, 6 MB each.", 413);

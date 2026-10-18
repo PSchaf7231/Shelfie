@@ -26,7 +26,7 @@ export async function POST(request: NextRequest) {
     if (!batch.photos.length || batch.revision !== data.revision) throw new IntakeError("Your label photos changed. Please check them again.", 409);
     const { transcript } = await readIngredientLabel(batch.photos);
     // Preferences come only from the verified server session, not submitted JSON.
-    const analysis = analyzeIngredients(transcript, { pregnancy: session.pregnancy, glp1: session.glp1 });
+    const analysis = analyzeIngredients(transcript, { pregnancy: session.pregnancy, glp1: session.glp1 }, session.skinProfile);
     await store.saveIngredientAnalysis(token, data.revision, analysis);
     return reply(analysis);
   } catch (error) { return failure(error); }

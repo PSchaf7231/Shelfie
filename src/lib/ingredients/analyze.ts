@@ -1,5 +1,7 @@
 import { CATALOG_VERSION, findIngredient, normalizeName, sources, type IngredientRecord, type SourceId } from './catalog';
 import { validateTranscript, type ParsedIngredient } from './parser';
+import { skinProfile, type SkinProfile } from '../skin-profile';
+import { skinGuidance } from './skin-guidance';
 export type Modes = { pregnancy: boolean; glp1: boolean };
 export type IngredientFlag = { kind: 'drying' | 'pregnancy_nursing' | 'sensitive_skin'; message: string; sources: SourceId[] };
 export type IngredientAnalysis = {
@@ -37,7 +39,7 @@ function explain(item: ParsedIngredient, modes: Modes): IngredientAnalysis {
     alcoholBucket: record.alcohol, role: record.role, flags, sources: record.sources,
   };
 }
-export function analyzeIngredients(value: unknown, modes: Modes) {
+export function analyzeIngredients(value: unknown, modes: Modes, profile?: SkinProfile) {
   const { transcript, ingredients: parsed } = validateTranscript(value);
   const ingredients = parsed.map(item => explain(item, modes));
   const unmatched = ingredients.filter(item => item.match === 'unmatched').map(item => item.labelName);
@@ -45,6 +47,7 @@ export function analyzeIngredients(value: unknown, modes: Modes) {
     status: unmatched.length ? 'needs_review' as const : 'complete' as const,
     catalogVersion: CATALOG_VERSION, rawLabelText: transcript.rawText, modes,
     ingredients,
+    ...(profile ? { skinProfile: skinProfile(profile), skinGuidance: skinGuidance(ingredients, profile) } : {}),
     alcohols: { drying: ingredients.filter(item => item.alcoholBucket === 'drying').map(item => item.labelName), fatty: ingredients.filter(item => item.alcoholBucket === 'fatty').map(item => item.labelName) },
     unmatched,
     notes: [

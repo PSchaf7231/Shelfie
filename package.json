@@ -10,7 +10,8 @@
     "test": "tsx scripts/test.ts",
     "test:photos": "tsx scripts/test-photo-browser.ts",
     "db:migrate": "tsx scripts/migrate.ts",
-    "db:import-sqlite": "tsx scripts/import-sqlite.ts"
+    "db:import-sqlite": "tsx scripts/import-sqlite.ts",
+    "test:profile-help": "tsx scripts/test-profile-help-browser.ts"
   },
   "dependencies": {
     "@fontsource/cormorant-garamond": "^5.2.0",

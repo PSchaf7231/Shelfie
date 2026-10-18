@@ -13,7 +13,7 @@ export default async function ScanPage() {
   if (!status.eligible) redirect("/report");
   return <div className="intake-shell photo-shell">
     <header><a className="brand brand-link" href="/">Shelfie</a></header>
-    <main><PhotoCapture /></main>
+    <main><a className="text-button" href="/intake">Review my skin profile</a><PhotoCapture /></main>
     <SiteFooter />
   </div>;
 }

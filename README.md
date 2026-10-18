@@ -209,6 +209,33 @@ No payment, checkout, subscription trial, or publishing flow is included.
 
 
 ## Cloud runtime and publication
+The optional skin profile offers dry/oily/combination choices, sensitive/acne-prone/
+redness/eczema/fragrance-allergy concerns, and a 300-character note. Browser
+dictation starts only on an explicit microphone tap where supported; typing and
+the phone-keyboard microphone remain available. Shelfie saves text, not audio.
+Verified users can edit the profile before completion without a new email code.
+The server supplies the profile to analysis, invalidates mismatched drafts, and
+saves the profile and deterministic guidance in the immutable report. Earlier
+completed reports remain readable. Notes are displayed as supplied, not diagnosed
+or interpreted as instructions. Unknown ingredient coverage remains explicit.
+
+Help / Message us is available in the shared footer and beside photo failures.
+The form names Paul as the owner and sends name, reply email, message and an
+optional sanitized screenshot to `paulschafranick@gmail.com` through Resend.
+Messages and delivery state are stored in PostgreSQL for follow-up; there is no
+public message-list or screenshot endpoint. Contacting the owner needs no login.
+The destination is fixed on the server. Request IDs and Resend idempotency keys
+prevent duplicate notifications on retries; failed delivery leaves the message
+saved with a retry option and the phone number. There are per-email and global
+hourly limits. Messages remain until owner cleanup. The private build check uses
+Resend's documented test inbox, not the owner's actual Gmail inbox. Automatic
+Gmail monitoring and AI replies are not implemented. Apply migration
+`003_profiles_and_help` before deploying these additions.
+
+Run `npm run test:profile-help` for mobile signup/profile, dictation/fallback,
+help-dialog, screenshot, retry and focus checks. It uses mocked APIs and does not
+send email. The ordinary photo regression remains `npm run test:photos`.
+
 In this Codex cloud environment, start Node with `NODE_USE_ENV_PROXY=1` so API
 requests use the supplied HTTPS proxy and its injected secret bindings. For example:
 `NODE_USE_ENV_PROXY=1 npm run start`. Never copy proxy placeholders into a hosted

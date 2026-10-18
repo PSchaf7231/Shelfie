@@ -1,5 +1,6 @@
 import type { IngredientAnalysis } from "@/lib/ingredients/analyze";
 import { REPORT_DISCLAIMER, UNVERIFIED_INGREDIENT, type CompletedReport } from "@/lib/report";
+import { skinProfileLabels } from "@/lib/skin-profile";
 
 function IngredientLine({ item }: { item: IngredientAnalysis }) {
   return <>
@@ -30,6 +31,14 @@ export default function ReportContent({ report }: { report: CompletedReport }) {
         <p>We’ve kept the names as read. Missing explanations and cautions have not been filled in.</p>
       </div>}
     </header>
+
+    {analysis.skinProfile && <section className="report-section" aria-labelledby="your-skin-profile">
+      <h2 id="your-skin-profile">For the skin you described</h2>
+      <p>{skinProfileLabels(analysis.skinProfile).join(" · ") || "No skin type or concerns selected."}</p>
+      {analysis.skinProfile.note && <p>Your note: {analysis.skinProfile.note}</p>}
+      <ul>{analysis.skinGuidance?.map((note, index) => <li key={index}>{note}</li>)}</ul>
+      <p className="form-help">These are general ingredient cautions based on your choices. Your note is saved as you wrote it; it is not a diagnosis or a medical assessment.</p>
+    </section>}
 
     <section className="report-section" aria-labelledby="every-ingredient">
       <h2 id="every-ingredient">Every ingredient</h2>

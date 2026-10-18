@@ -3,11 +3,12 @@ import type { ProductAnalysis } from "./ingredients/analyze";
 import { isReportAnalysis, type CompletedReport } from "./report";
 import { IntakeError } from "./errors";
 import { PostgresDatabase, type Queryable } from "./postgres";
+import { skinProfile, type SkinProfile } from "./skin-profile";
 export { IntakeError } from "./errors";
 
-export type Intake = { name: string; email: string; pregnancy: boolean; glp1: boolean };
+export type Intake = { name: string; email: string; pregnancy: boolean; glp1: boolean; skinProfile?: SkinProfile };
 export type StoredPhoto = { id: string; bytes: Buffer; width: number; height: number };
-type Session = Omit<Intake, "pregnancy" | "glp1"> & { id: string; pregnancy: number; glp1: number; code_hash: string; expires: string; attempts: number; verified: number; created: string; used: boolean };
+type Session = Omit<Intake, "pregnancy" | "glp1"> & { skin_profile: unknown; id: string; pregnancy: number; glp1: number; code_hash: string; expires: string; attempts: number; verified: number; created: string; used: boolean };
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 
 export function validateIntake(value: unknown): Intake {
@@ -16,7 +17,7 @@ export function validateIntake(value: unknown): Intake {
   if (typeof data.name !== "string" || !data.name.trim() || data.name.trim().length > 100) throw new IntakeError("Please enter a name of up to 100 characters.");
   if (typeof data.email !== "string" || data.email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email.trim())) throw new IntakeError("Please enter a valid email address.");
   if (typeof data.pregnancy !== "boolean" || typeof data.glp1 !== "boolean") throw new IntakeError("Please select your report preferences.");
-  return { name: data.name.trim(), email: data.email.trim().toLowerCase(), pregnancy: data.pregnancy, glp1: data.glp1 };
+  return { name: data.name.trim(), email: data.email.trim().toLowerCase(), pregnancy: data.pregnancy, glp1: data.glp1, ...(data.skinProfile !== undefined ? { skinProfile: skinProfile(data.skinProfile) } : {}) };
 }
 
 export class IntakeStore {
@@ -32,7 +33,7 @@ export class IntakeStore {
     const session = await this.session(database, token);
     if (!session || Number(session.expires) <= now) return { state: "intake" as const };
     if (!session.verified) return { state: "pending" as const, email: session.email };
-    return { state: "verified" as const, name: session.name, email: session.email, pregnancy: !!session.pregnancy, glp1: !!session.glp1, eligible: !session.used };
+    return { state: "verified" as const, name: session.name, email: session.email, pregnancy: !!session.pregnancy, glp1: !!session.glp1, skinProfile: skinProfile(session.skin_profile), eligible: !session.used };
   }
   private async requireEligibleOn(database: Queryable, token: string, now: number) {
     const status = await this.statusOn(database, token, now);
@@ -59,7 +60,7 @@ export class IntakeStore {
       if (latest && now - Number(latest.created) < 60000 || Number(perEmail.total) >= 5 || Number(recent.total) >= 100) throw new IntakeError("Please wait before requesting another code.", 429);
       const token = randomBytes(32).toString("hex");
       const code = randomInt(0, 1000000).toString().padStart(6, "0");
-      await database.query("INSERT INTO sessions (id, name, email, pregnancy, glp1, code_hash, expires, created) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)", [hash(token), input.name, input.email, Number(input.pregnancy), Number(input.glp1), hash(token + code), now + 600000, now]);
+      await database.query("INSERT INTO sessions (id, name, email, pregnancy, glp1, code_hash, expires, created, skin_profile) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)", [hash(token), input.name, input.email, Number(input.pregnancy), Number(input.glp1), hash(token + code), now + 600000, now, JSON.stringify(skinProfile(input.skinProfile))]);
       return { token, code };
     });
   }
@@ -82,6 +83,18 @@ export class IntakeStore {
   }
   async status(token: string, now = Date.now()) { return this.database.read(database => this.statusOn(database, token, now)); }
   async requireEligible(token: string, now = Date.now()) { return this.database.read(database => this.requireEligibleOn(database, token, now)); }
+  async updateSkinProfile(token: string, value: unknown, now = Date.now()) {
+    const profile = skinProfile(value);
+    return this.database.transaction(async database => {
+      await this.lockEmail(database, token, now);
+      const status = await this.requireEligibleOn(database, token, now);
+      if (JSON.stringify(status.skinProfile) !== JSON.stringify(profile)) {
+        await database.query("UPDATE sessions SET skin_profile=$1::jsonb WHERE id=$2", [JSON.stringify(profile),hash(token)]);
+        await database.query("DELETE FROM ingredient_drafts WHERE email=$1", [status.email]);
+      }
+      return { ...status, skinProfile:profile };
+    });
+  }
   private async prunePhotos(database: Queryable, email: string, now: number) {
     // Cascading foreign keys remove expired photos and drafts atomically.
     await database.query("DELETE FROM photo_batches WHERE email = $1 AND expires <= $2", [email, now]);
@@ -155,7 +168,7 @@ export class IntakeStore {
     const batch = await this.photoBatchOn(database, token, now);
     if (!batch.photos.length || batch.revision !== revision) throw new IntakeError("Your label photos changed or expired. Please check them again.", 409);
     const modes = JSON.stringify({ pregnancy: session.pregnancy, glp1: session.glp1 });
-    const row = (await database.query<{ content: ProductAnalysis }>("SELECT content FROM ingredient_drafts WHERE email = $1 AND revision = $2 AND modes = $3::jsonb AND catalog_version = $4", [session.email, revision, modes, catalogVersion])).rows[0];
+    const row = (await database.query<{ content: ProductAnalysis }>(`SELECT content FROM ingredient_drafts WHERE email = $1 AND revision = $2 AND modes = $3::jsonb AND catalog_version = $4 AND COALESCE(content->'skinProfile', '{"type":"","concerns":[],"note":""}'::jsonb) = $5::jsonb`, [session.email, revision, modes, catalogVersion, JSON.stringify(session.skinProfile)])).rows[0];
     return row?.content ?? null;
   }
   async ingredientAnalysis(token: string, revision: number, catalogVersion: string, now = Date.now()) {
@@ -168,6 +181,7 @@ export class IntakeStore {
       const batch = await this.photoBatchOn(database, token, now);
       if (!batch.photos.length || batch.revision !== revision) throw new IntakeError("Your label photos changed while they were being read. Please try again.", 409);
       if (analysis.modes.pregnancy !== session.pregnancy || analysis.modes.glp1 !== session.glp1) throw new IntakeError("Your report preferences changed. Please try again.", 409);
+      if (JSON.stringify(skinProfile(analysis.skinProfile)) !== JSON.stringify(session.skinProfile)) throw new IntakeError("Your skin profile changed. Please read the label again.", 409);
       await database.query("INSERT INTO ingredient_drafts (email, revision, modes, catalog_version, content) VALUES ($1, $2, $3::jsonb, $4, $5::jsonb) ON CONFLICT(email) DO UPDATE SET revision = excluded.revision, modes = excluded.modes, catalog_version = excluded.catalog_version, content = excluded.content", [session.email, revision, JSON.stringify(analysis.modes), analysis.catalogVersion, JSON.stringify(analysis)]);
     });
   }

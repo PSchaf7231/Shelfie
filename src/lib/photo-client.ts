@@ -39,7 +39,7 @@ export function addLabelPhotos(current: Photo[], incoming: Photo[], replaceId?: 
   return [...current, ...incoming];
 }
 
-export async function preparePhotoForUpload(file: File, turnClockwise = false): Promise<File> {
+export async function preparePhotoForUpload(file: File, turnClockwise = false, allowSmall = false): Promise<File> {
   if (!file.size || file.size > MAX_SOURCE_PHOTO_BYTES) throw new PhotoClientError("This photo is too large to open. Take a closer photo of the ingredient list and try again.");
   const url = URL.createObjectURL(file);
   const image = new Image();
@@ -50,12 +50,12 @@ export async function preparePhotoForUpload(file: File, turnClockwise = false): 
       image.onerror = () => reject(new PhotoClientError("Your phone couldn’t open this photo. Choose a JPG or PNG, or use Take a photo."));
       image.src = url;
     });
-    if (Math.min(image.naturalWidth, image.naturalHeight) < 480) throw new PhotoClientError("This photo is too small to read the label. Take a closer, higher-resolution photo.");
+    if (!allowSmall && Math.min(image.naturalWidth, image.naturalHeight) < 480) throw new PhotoClientError("This photo is too small to read the label. Take a closer, higher-resolution photo.");
     const scale = Math.min(1, MAX_PHOTO_EDGE / Math.max(image.naturalWidth, image.naturalHeight));
     const width = Math.round(image.naturalWidth * scale), height = Math.round(image.naturalHeight * scale);
     canvas.width = turnClockwise ? height : width;
     canvas.height = turnClockwise ? width : height;
-    if (Math.min(canvas.width, canvas.height) < 480) throw new PhotoClientError("Take a closer photo of one section of the ingredient list. Add overlapping photos for a long label.");
+    if (!allowSmall && Math.min(canvas.width, canvas.height) < 480) throw new PhotoClientError("Take a closer photo of one section of the ingredient list. Add overlapping photos for a long label.");
     const context = canvas.getContext("2d", { alpha: false });
     if (!context) throw new PhotoClientError("Your phone couldn’t prepare this photo. Please try another photo.");
     context.fillStyle = "#ffffff";

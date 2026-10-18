@@ -3,6 +3,7 @@ import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import { addLabelPhotos, PhotoClientError, photoBatchResponse, preparePhotoForUpload, readPhotoResponse, type Photo } from "@/lib/photo-client";
 import { clearPhotoDraft, loadPhotoDraft, savePhotoDraft } from "@/lib/photo-draft";
 import { MAX_PHOTOS } from "@/lib/photo-limits";
+import HelpButton from "./help-button";
 
 const LOAD_ERROR = "We couldn’t load your saved photos. Refresh this page to try again.";
 const CHECK_ERROR = "We couldn’t check your photos this time. Your photos are still here, and your free report hasn’t been used. Please try again.";
@@ -262,8 +263,9 @@ export default function PhotoCapture() {
       </div>}
     </>}
     {error && <p className="form-error" role="alert">{error}</p>}
+    {error && <HelpButton label="Having trouble? Message us" context={`I had trouble with a label photo: ${error}`} />}
     {error && !!photos.length && !locked && <div className="photo-review">
-      <p className="form-help">Think this photo should work? You can share these label photos and the message with Shelfie’s support team for troubleshooting. The shared copy is private and available for review for 24 hours. Sharing is optional and never uses your free report.</p>
+      <p className="form-help">Think this photo should work? You can save these label photos and the message privately for Paul, Shelfie’s owner, to review with development help. This copy is available for review for 24 hours and is not emailed automatically. Sharing is optional and never uses your free report.</p>
       <button className="secondary-button" disabled={working || shared?.selection === reviewSelection} onClick={shareForReview}>{sharing ? "Sharing…" : shared?.selection === reviewSelection ? "Shared for review" : "Share photos for review"}</button>
     </div>}
     {shared && <div className="photo-review-receipt" role="status">

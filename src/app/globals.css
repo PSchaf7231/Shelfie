@@ -63,6 +63,17 @@ footer { text-align: center; color: var(--muted); font-size: 13px; line-height: 
 button:disabled { opacity: .65; cursor: wait; }
 .text-button { background: transparent; border: 0; color: var(--gold); padding: 12px 0; min-height: 48px; cursor: pointer; text-decoration: underline; text-underline-offset: 5px; text-align: left; }
 .form-error { color: var(--ivory); border-left: 2px solid var(--gold); padding: 12px 16px; line-height: 1.6; }
+.skin-profile-fields { border: 0; padding: 0; margin: 28px 0; min-width: 0; }
+.skin-profile-fields legend { color: var(--ivory); font-size: 19px; }
+.profile-chips { display: flex; flex-wrap: wrap; gap: 10px; margin: 16px 0; }
+.profile-chips button { min-height: 44px; border: 1px solid #d8ba7b70; border-radius: 999px; padding: 10px 16px; background: transparent; color: var(--ivory); font: inherit; cursor: pointer; }
+.profile-chips button[aria-pressed="true"] { background: var(--gold); color: var(--navy); }
+.help-dialog { color: var(--ivory); background: var(--navy); border: 1px solid var(--gold); border-radius: 10px; padding: 22px; width: min(560px, calc(100vw - 24px)); max-height: calc(100dvh - 32px); overflow-y: auto; }
+.help-dialog::backdrop { background: #000b; }
+.help-dialog-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.help-dialog h2 { font-family: "Cormorant Garamond", Georgia, serif; font-size: 30px; font-weight: 500; margin: 10px 0; }
+.help-dialog a { color: var(--gold); overflow-wrap: anywhere; }
+.field textarea { width: 100%; background: #ffffff04; color: var(--ivory); border: 1px solid #88764f; border-radius: 6px; padding: 14px 16px; font: inherit; resize: vertical; }
 
 .photo-shell { max-width: 760px; gap: 36px; }
 .photo-guide { line-height: 1.7; padding: 18px 20px; border: 1px solid #d8ba7b40; border-radius: 6px; }

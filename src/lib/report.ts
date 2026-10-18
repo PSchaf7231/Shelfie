@@ -1,4 +1,6 @@
-import type { ProductAnalysis } from "./ingredients/analyze";
+import type { ProductAnalysis, IngredientAnalysis } from "./ingredients/analyze";
+import { skinProfile } from "./skin-profile";
+import { skinGuidance } from "./ingredients/skin-guidance";
 
 export const REPORT_DISCLAIMER = "Cosmetic information only — not medical advice";
 export const UNVERIFIED_INGREDIENT = "couldn't verify — flagged for review";
@@ -35,6 +37,13 @@ export function isReportAnalysis(value: unknown): value is ProductAnalysis {
     } else if (!text(item.matchedName) || item.role === "unknown") return false;
     if (item.alcoholBucket === "drying") { if (item.role !== "drying_alcohol") return false; drying.push(item.labelName); }
     if (item.alcoholBucket === "fatty") { if (item.role !== "moisturizer" || item.flags.length) return false; fatty.push(item.labelName); }
+  }
+  if (value.skinProfile !== undefined || value.skinGuidance !== undefined) {
+    try {
+      if (!object(value.skinProfile) || typeof value.skinProfile.type !== "string" || !Array.isArray(value.skinProfile.concerns) || typeof value.skinProfile.note !== "string" || !texts(value.skinGuidance)) return false;
+      const profile = skinProfile(value.skinProfile);
+      if (!same(value.skinGuidance, skinGuidance(value.ingredients as IngredientAnalysis[], profile))) return false;
+    } catch { return false; }
   }
   return same(drying, value.alcohols.drying) && same(fatty, value.alcohols.fatty) && same(unmatched, value.unmatched) && (unmatched.length ? value.status === "needs_review" : value.status === "complete");
 }
