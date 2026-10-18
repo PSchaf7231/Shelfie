@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import PhotoCapture from "@/components/photo-capture";
+import SiteFooter from "@/components/site-footer";
 import { intakeStore } from "@/lib/intake";
 import { SESSION_COOKIE } from "@/lib/intake-http";
 
@@ -13,6 +14,6 @@ export default async function ScanPage() {
   return <div className="intake-shell photo-shell">
     <header><a className="brand brand-link" href="/">Shelfie</a></header>
     <main><PhotoCapture /></main>
-    <footer>Cosmetic information only — not medical advice.</footer>
+    <SiteFooter />
   </div>;
 }

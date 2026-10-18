@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import ReportContent from "@/components/report-content";
 import ReportScreen from "@/components/report-screen";
+import SiteFooter from "@/components/site-footer";
 import { intakeStore, IntakeError } from "@/lib/intake";
 import { SESSION_COOKIE } from "@/lib/intake-http";
 import { CATALOG_VERSION } from "@/lib/ingredients/catalog";
@@ -30,6 +31,6 @@ export default async function ReportPage() {
   return <div className="intake-shell report-shell">
     <header><a className="brand brand-link" href="/">Shelfie</a></header>
     <main>{content}</main>
-    <footer>{REPORT_DISCLAIMER}</footer>
+    <SiteFooter disclaimer={REPORT_DISCLAIMER} />
   </div>;
 }

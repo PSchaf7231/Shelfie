@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import SiteFooter from "@/components/site-footer";
 
 export default function Home() {
   const [pregnancyMode, setPregnancyMode] = useState(false);
@@ -22,7 +23,7 @@ export default function Home() {
         </button>
         <a className="primary-button" href={`/intake?pregnancy=${pregnancyMode ? "1" : "0"}`}>Get my free first report</a>
       </main>
-      <footer>Cosmetic information only — not medical advice.</footer>
+      <SiteFooter />
     </div>
   );
 }

@@ -31,6 +31,12 @@ h1 { margin: 0; font-family: "Cormorant Garamond", Georgia, serif; font-weight: 
 .primary-button { display: flex; align-items: center; justify-content: center; min-height: 58px; max-width: 360px; margin: 28px auto 0; padding: 16px 24px; border-radius: 6px; background: var(--gold); color: var(--navy); font-size: 17px; font-weight: 500; text-decoration: none; }
 .primary-button:hover { background: #e5cb96; }
 footer { text-align: center; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.site-footer { margin-top: 24px; }
+.support-contact { padding: 20px 0; border-top: 1px solid #d8ba7b40; }
+.support-heading { margin: 0 0 8px; color: var(--ivory); font-size: 16px; font-weight: 500; }
+.support-links { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.support-links a { display: flex; align-items: center; justify-content: center; min-height: 44px; max-width: 100%; padding: 8px 4px; color: var(--gold); font-size: 15px; line-height: 1.5; text-underline-offset: 4px; overflow-wrap: anywhere; }
+.footer-disclaimer { margin: 0; }
 .placeholder { min-height: 100svh; max-width: 640px; margin: auto; padding: 64px 24px; }
 .placeholder h1 { margin-top: 48px; }
 .placeholder > p:not(.brand) { color: var(--muted); font-size: 18px; line-height: 1.6; }
