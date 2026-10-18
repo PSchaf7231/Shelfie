@@ -70,7 +70,7 @@ async function main() {
     });
     async function ready(target: Page = page) { await target.waitForFunction(() => { const button = document.querySelector<HTMLButtonElement>(".capture-actions button"); return button && !button.disabled; }); }
     async function count(value: number) { await page.waitForFunction(expected => document.querySelectorAll(".photo-list li").length === expected && !document.querySelector(".capture-actions")?.textContent?.includes("Adding"), value); }
-    async function checkPhotos() { await page.getByRole("button", { name: /^Check (this|these)/ }).click(); }
+    async function checkPhotos() { await page.getByRole("button", { name: /^Upload and check (this|these)/ }).click(); }
     const sources = () => page.locator(".photo-list img").evaluateAll(images => images.map(image => image.getAttribute("src")));
 
     await page.goto(origin); await ready();

@@ -202,7 +202,7 @@ export default function PhotoCapture() {
         </div></div>
       </li>)}</ol>
       <button className="text-button" disabled={working || locked} onClick={() => changeSelection([], "Ready for a different product. Add its ingredient-label photos.")}>Start a different product</button>
-      <button className="primary-button form-button" disabled={working || loading || locked} onClick={check}>{busy ? "Checking your photos…" : `Check ${photos.length === 1 ? "this photo" : `these ${photos.length} photos`}`}</button>
+      <button className="primary-button form-button" disabled={working || loading || locked} onClick={check}>{busy ? "Uploading and checking…" : `Upload and check ${photos.length === 1 ? "this photo" : `these ${photos.length} photos`}`}</button>
       {revision > 0 && !changed && <div className="report-next">
         <p className="form-help">Your first report is free. Showing the completed report uses the one free report for this email.</p>
         <button className="primary-button form-button" disabled={working || loading || locked} onClick={openReport}>{reading ? "Reading every ingredient…" : "Show my free report"}</button>
