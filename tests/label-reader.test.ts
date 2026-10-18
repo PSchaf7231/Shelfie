@@ -6,10 +6,12 @@ const transcript = (second='Glycerin') => ({rawText:`Aqua, ${second}`, complete:
 const response = (body: unknown) => Response.json({choices:[{finish_reason:'stop',message:{content:JSON.stringify(body)}}]});
 test('independent reads must agree and every entry must have confident literal text', async () => {
   const previous=process.env.LABEL_READER_API_KEY; process.env.LABEL_READER_API_KEY='test-placeholder';
+  const previousModel=process.env.LABEL_READER_MODEL; delete process.env.LABEL_READER_MODEL;
   try {
     let calls=0;
     const good=await readIngredientLabel([photo],async (_url,options)=>{
       calls++; const body=JSON.parse(String(options?.body));
+      assert.equal(body.model,'gpt-4.1');
       assert.equal(body.response_format.json_schema.strict,true);
       assert.ok(!JSON.stringify(body.messages).includes('a prior transcription is'));
       return response(transcript());
@@ -26,7 +28,10 @@ test('independent reads must agree and every entry must have confident literal t
     await assert.rejects(readIngredientLabel([photo],async()=>new Response('',{status:429})),/unavailable/);
     delete process.env.LABEL_READER_API_KEY;
     await assert.rejects(readIngredientLabel([photo]),/unavailable/);
-  } finally {if(previous===undefined)delete process.env.LABEL_READER_API_KEY;else process.env.LABEL_READER_API_KEY=previous;}
+  } finally {
+    if(previous===undefined)delete process.env.LABEL_READER_API_KEY;else process.env.LABEL_READER_API_KEY=previous;
+    if(previousModel===undefined)delete process.env.LABEL_READER_MODEL;else process.env.LABEL_READER_MODEL=previousModel;
+  }
 });
 test('independent reads may format the label heading differently but must agree on every ingredient character', async () => {
   const previous=process.env.LABEL_READER_API_KEY; process.env.LABEL_READER_API_KEY='test-placeholder';

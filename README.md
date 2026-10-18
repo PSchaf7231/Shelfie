@@ -109,8 +109,10 @@ alone never authorize acceptance. Uncertain or malformed verdicts, service failu
 and absent credentials fail closed. Rejected images are not saved on the server;
 the browser retains its pending selection so it can be corrected and retried.
 
-Set `LABEL_READER_API_KEY` securely for OpenAI's API. `LABEL_READER_MODEL` defaults
-to `gpt-4.1-mini`, which supports vision and strict JSON schemas. Allow HTTPS to
+Set `LABEL_READER_API_KEY` securely for OpenAI's API. Literal ingredient
+transcription defaults to `gpt-4.1` for more reliable character-for-character
+reads; photo-quality screening defaults to `gpt-4.1-mini`. Both support vision
+and strict JSON schemas. `LABEL_READER_MODEL` optionally overrides both stages. Allow HTTPS to
 `api.openai.com`. Submitted photos go to that provider for quality review and
 literal ingredient transcription. Product scoring is not built.
 The automated tests use provider fixtures, not live model calls.
