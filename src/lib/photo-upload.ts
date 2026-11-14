@@ -28,7 +28,7 @@ export async function photoForm(request: Request) {
   const form = await uploadForm(request);
   const files = form.getAll("photos");
   if (files.some(file => !(file instanceof File))) throw new IntakeError("Please choose image files.");
-  if (files.length > MAX_PHOTOS || files.some(file => (file as File).size > MAX_PHOTO_BYTES)) throw new IntakeError("Use up to six photos, 6 MB each.", 413);
+  if (files.length > MAX_PHOTOS || files.some(file => (file as File).size > MAX_PHOTO_BYTES)) throw new IntakeError("Use one ingredient photo, 6 MB or smaller.", 413);
   let existingIds: string[];
   try {
     const raw = form.get("existingIds");
@@ -38,7 +38,7 @@ export async function photoForm(request: Request) {
   const revisionValue = form.get("revision");
   const revision = Number(revisionValue);
   if (typeof revisionValue !== "string" || !/^\d+$/.test(revisionValue) || !Number.isSafeInteger(revision)) throw new IntakeError("Please refresh your photos and try again.");
-  if (files.length + existingIds.length < 1 || files.length + existingIds.length > MAX_PHOTOS) throw new IntakeError("Choose between one and six photos of this product.");
+  if (files.length + existingIds.length < 1 || files.length + existingIds.length > MAX_PHOTOS) throw new IntakeError("Choose one photo of this product.");
   const reviewConsent = form.get("reviewConsent") === "photo-review-v1";
   const reviewReason = form.get("reviewReason");
   return { files: files as File[], existingIds, revision, reviewConsent,

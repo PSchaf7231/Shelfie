@@ -19,7 +19,7 @@ export default async function ReportPage() {
     if (report) content = <ReportContent report={report} />;
     else {
       const batch = await store.photoBatch(token);
-      if (!batch.photos.length || !await store.ingredientAnalysis(token, batch.revision, CATALOG_VERSION)) redirect("/scan");
+      if ((!batch.photos.length && !batch.ingredientOrigin) || !await store.ingredientAnalysis(token, batch.revision, CATALOG_VERSION)) redirect("/scan");
       content = <ReportScreen revision={batch.revision} />;
     }
   } catch (error) {

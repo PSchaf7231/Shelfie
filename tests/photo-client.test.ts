@@ -10,7 +10,7 @@ const fallback = 'We couldn’t check your photos. Your photos are still here. P
 
 test('plaintext hosting errors become actionable messages, never raw parser errors', async () => {
   await assert.rejects(readPhotoResponse(new Response('Request Entity Too Large', { status: 413 }), fallback), error => {
-    assert.match((error as Error).message, /too large to send together/);
+    assert.match((error as Error).message, /too large to send/);
     assert.doesNotMatch((error as Error).message, /Unexpected token|JSON/);
     return true;
   });
@@ -19,16 +19,13 @@ test('plaintext hosting errors become actionable messages, never raw parser erro
   await assert.rejects(readPhotoResponse(Response.json({ error: 'Photo 2 is too dark. Retake it in bright, even light.' }, { status: 422 }), fallback), /Photo 2 is too dark/);
 });
 
-test('adding angles preserves earlier photos and retaking replaces only its selected slot', () => {
-  const first = photo(), second = photo(), third = photo();
-  const two = addLabelPhotos(addLabelPhotos([], [first]), [second]);
-  assert.deepEqual(two, [first, second]);
-  assert.deepEqual(addLabelPhotos(two, [third], first.id), [third, second]);
-  assert.deepEqual(two, [first, second]);
-  assert.throws(() => addLabelPhotos(two, [third], 'missing'), /retake/);
-  const six = Array.from({ length: MAX_PHOTOS }, photo);
-  assert.throws(() => addLabelPhotos(six, [third]), /six photos/);
-  assert.equal(six.length, MAX_PHOTOS);
+test('one photo can be replaced, but a second photo cannot be added', () => {
+  const first = photo(), replacement = photo();
+  const selected = addLabelPhotos([], [first]);
+  assert.deepEqual(addLabelPhotos(selected, [replacement], first.id), [replacement]);
+  assert.deepEqual(selected, [first]);
+  assert.throws(() => addLabelPhotos(selected, [replacement]), /one photo/);
+  assert.throws(() => addLabelPhotos(selected, [replacement], 'missing'), /retake/);
 });
 
 test('malformed successful photo responses cannot erase the selected photos or unlock a report', () => {
@@ -40,7 +37,7 @@ test('malformed successful photo responses cannot erase the selected photos or u
   }
 });
 
-test('six prepared photos fit the total request budget including multipart metadata', async () => {
+test('one prepared photo fits the total request budget including multipart metadata', async () => {
   const body = new FormData();
   body.set('revision', '0'); body.set('existingIds', '[]');
   for (let i = 0; i < MAX_PHOTOS; i++) body.append('photos', new Blob([new Uint8Array(MAX_PREPARED_PHOTO_BYTES)], { type: 'image/jpeg' }), 'ingredient-label.jpg');

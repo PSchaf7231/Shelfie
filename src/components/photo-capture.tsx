@@ -3,6 +3,7 @@ import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import { addLabelPhotos, PhotoClientError, photoBatchResponse, preparePhotoForUpload, readPhotoResponse, type Photo } from "@/lib/photo-client";
 import { clearPhotoDraft, loadPhotoDraft, savePhotoDraft } from "@/lib/photo-draft";
 import { MAX_PHOTOS } from "@/lib/photo-limits";
+import BarcodeCapture from "./barcode-capture";
 import HelpButton from "./help-button";
 
 const LOAD_ERROR = "We couldn’t load your saved photos. Refresh this page to try again.";
@@ -62,9 +63,13 @@ export default function PhotoCapture() {
           return { id: photo.id, url, file };
         });
         setChanged(true);
-        setMessage(selected.length ? "Your unfinished photos are back. Add another angle or check them when you’re ready." : "Ready for a different product. Add its ingredient-label photos.");
+        setMessage(selected.length ? "Your unfinished photo is back. Save it when you’re ready." : "Ready for a different product. Add its ingredient-label photos.");
       } else if (batch.photos.length) {
-        setMessage("Your checked label photos are saved. Your free report is still available.");
+        setMessage("Your label photo is saved. Your free report is still available.");
+      }
+      if (selected.length > MAX_PHOTOS) {
+        selected = selected.slice(0, MAX_PHOTOS); setChanged(true);
+        setMessage("Shelfie now uses one ingredient photo. Check that it shows the whole list, then save it again, or use the barcode.");
       }
       current.current = selected;
       setPhotos(selected); setRevision(batch.revision);
@@ -112,7 +117,7 @@ export default function PhotoCapture() {
     pendingSelections.current++; setPreparing(true); setError(""); setMessage("");
     selectionQueue.current = selectionQueue.current.catch(() => {}).then(async () => {
       if (!mounted.current) return;
-      if (!replaceId && current.current.length + files.length > MAX_PHOTOS) throw new PhotoClientError("Use up to six photos of the same product. Remove a photo before adding more.");
+      if (!replaceId && current.current.length + files.length > MAX_PHOTOS) throw new PhotoClientError("Use one photo of the whole ingredient list. Retake or remove it before choosing another.");
       const prepared: File[] = [];
       for (let i = 0; i < files.length; i++) {
         try { prepared.push(await preparePhotoForUpload(files[i])); }
@@ -131,7 +136,7 @@ export default function PhotoCapture() {
       catch (error) { for (const photo of incoming) { URL.revokeObjectURL(photo.url); urls.current.delete(photo.url); } throw error; }
       display(next); setChanged(true);
       const stored = await persist(next);
-      if (mounted.current) setMessage(stored ? (replaceId ? "Retake added. Your other photos are still here." : "Photo added. You can add another angle of this same product.") : KEEP_OPEN);
+      if (mounted.current) setMessage(stored ? (replaceId ? "Retake added. Your other photos are still here." : "Photo added. Save it when you’re ready.") : KEEP_OPEN);
     }).catch(error => {
       if (mounted.current) setError(error instanceof PhotoClientError ? error.message : "We couldn’t add this photo. Your other photos are still here. Please try again.");
     }).finally(() => {
@@ -162,7 +167,7 @@ export default function PhotoCapture() {
       const next = addLabelPhotos(current.current, [{ id: crypto.randomUUID(), url, file: turned }], photo.id);
       display(next); setChanged(true);
       const stored = await persist(next);
-      if (mounted.current) setMessage(stored ? "Photo rotated. Your other photos are still here. Upload and check when you’re ready." : KEEP_OPEN);
+      if (mounted.current) setMessage(stored ? "Photo rotated. Save it when you’re ready." : KEEP_OPEN);
     } catch (error) { if (mounted.current) setError(error instanceof PhotoClientError ? error.message : "We couldn’t rotate this photo. Your photos are still here."); }
     finally { if (mounted.current) setPreparing(false); }
   }
@@ -233,15 +238,18 @@ export default function PhotoCapture() {
   }
 
   return <section className="intake-panel">
-    <h1>Let’s see the label.</h1>
+    <h1>Let’s find your ingredients.</h1>
+    {error && <p className="form-error" role="alert">{error}</p>}
+    <BarcodeCapture disabled={working || loading || locked} revision={revision} />
+    <h2>Photograph ingredients</h2>
     <p className="form-intro">Photograph the ingredient list of one product.</p>
     <p className="photo-guide">Use bright, even light without a shadow or glare. Fill the frame with the ingredient list. Rest your phone or elbows on a steady surface if that helps.</p>
-    <p className="form-help">Curved bottle or long list? Take one clear photo, turn the bottle a little, then add another. Include a few of the same words in both photos so we can follow the whole list.</p>
+    <p className="form-help">Use one photo with the whole ingredient list visible. Automated reading can make mistakes. Check the ingredient names in your report against the package. If the list cannot fit clearly in one photo, try its barcode.</p>
     <input ref={camera} id="camera-photo" className="visually-hidden" type="file" accept="image/*" capture="environment" tabIndex={-1} aria-hidden="true" onChange={event => select(event, true)} />
-    <input ref={upload} id="phone-photos" className="visually-hidden" type="file" accept="image/*" multiple tabIndex={-1} aria-hidden="true" onChange={event => select(event)} />
+    <input ref={upload} id="phone-photos" className="visually-hidden" type="file" accept="image/*" tabIndex={-1} aria-hidden="true" onChange={event => select(event)} />
     <div className="capture-actions">
-      <button className="primary-button form-button" disabled={working || loading || locked || photos.length >= MAX_PHOTOS} onClick={() => openCamera()}>{preparing ? "Adding your photo…" : photos.length ? "Take another photo" : "Take a photo"}</button>
-      <button className="secondary-button" disabled={working || loading || locked || photos.length >= MAX_PHOTOS} onClick={() => { retaking.current = undefined; upload.current?.click(); }}>{photos.length ? "Add photos from phone" : "Upload from phone"}</button>
+      <button className="primary-button form-button" disabled={working || loading || locked || photos.length >= MAX_PHOTOS} onClick={() => openCamera()}>{preparing ? "Adding your photo…" : "Take a photo"}</button>
+      <button className="secondary-button" disabled={working || loading || locked || photos.length >= MAX_PHOTOS} onClick={() => { retaking.current = undefined; upload.current?.click(); }}>Upload from phone</button>
     </div>
     {loading && <p role="status" className="form-help">Loading your photos…</p>}
     {!!photos.length && <>
@@ -256,13 +264,12 @@ export default function PhotoCapture() {
         </div></div>
       </li>)}</ol>
       <button className="text-button" disabled={working || locked} onClick={() => changeSelection([], "Ready for a different product. Add its ingredient-label photos.")}>Start a different product</button>
-      <button className="primary-button form-button" disabled={working || loading || locked} onClick={check}>{busy ? "Uploading and checking…" : `Upload and check ${photos.length === 1 ? "this photo" : `these ${photos.length} photos`}`}</button>
+      <button className="primary-button form-button" disabled={working || loading || locked} onClick={check}>{busy ? "Saving your photos…" : `Save ${photos.length === 1 ? "this photo" : `these ${photos.length} photos`}`}</button>
       {revision > 0 && !changed && <div className="report-next">
         <p className="form-help">Your first report is free. Showing the completed report uses the one free report for this email.</p>
         <button className="primary-button form-button" disabled={working || loading || locked} onClick={openReport}>{reading ? "Reading every ingredient…" : "Show my free report"}</button>
       </div>}
     </>}
-    {error && <p className="form-error" role="alert">{error}</p>}
     {error && <HelpButton label="Having trouble? Message us" context={`I had trouble with a label photo: ${error}`} />}
     {error && !!photos.length && !locked && <div className="photo-review">
       <p className="form-help">Think this photo should work? You can save these label photos and the message privately for Paul, Shelfie’s owner, to review with development help. This copy is available for review for 24 hours and is not emailed automatically. Sharing is optional and never uses your free report.</p>
@@ -275,6 +282,6 @@ export default function PhotoCapture() {
     {reviewError && <p className="form-error" role="alert">{reviewError}</p>}
     {message && <p className="photo-success" role="status">{message}</p>}
     {locked && <a className="back-link" href="/intake">Return to email verification</a>}
-    <p className="form-help">Retakes never use your free report. We’ll ask for clearer photos if we can’t read the label. Photos are sent securely to our vision provider for label checks and reading. Checked photos are private and available for 24 hours.</p>
+    <p className="form-help">Retakes never use your free report. We’ll ask for clearer photos if we can’t read the label. Photos are sent securely to our vision provider when you ask us to read the ingredients. Checked photos are private and available for 24 hours.</p>
   </section>;
 }

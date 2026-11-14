@@ -23,11 +23,11 @@ test('analysis uses only owned saved photos and server preferences; caches safel
         calls++;
         const request = JSON.parse(String(options?.body));
         assert.equal(request.response_format.json_schema.name, 'ingredient_transcription');
-        if (race && calls % 2 === 0) {
+        if (race) {
             const current = await store.photoBatch(token);
             await store.savePhotos(token, current.revision, [image]);
         }
-        return Response.json({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ ...transcript(), confidence: lowConfidence ? 0.5 : 0.99 }) } }] });
+        return Response.json({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ ...transcript(), confidence: 0.93, certain: !lowConfidence }) } }] });
     };
     const request = (who: string, data: unknown = { revision: 1 }) => new NextRequest('http://localhost/api/ingredients', { method: 'POST', headers: { host: 'localhost', origin: 'http://localhost', 'content-type': 'application/json', cookie: `shelfie_session=${who}` }, body: JSON.stringify(data) });
     try {
@@ -66,7 +66,7 @@ test('analysis uses only owned saved photos and server preferences; caches safel
         assert.equal(await store.ingredientAnalysis(token, 2, CATALOG_VERSION), null);
         const previousCalls = calls;
         race = true;
-        // Make the next second read replace the photo batch to exercise the final transaction gate.
+        // Make the single reading replace the photo batch to exercise the final transaction gate.
         calls = 0;
         assert.equal((await POST(request(token, { revision: 2 }))).status, 409);
         race = false;

@@ -5,13 +5,12 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { build } from "esbuild";
-import { chromium, type Page } from "playwright-core";
+import { chromium } from "playwright-core";
 import sharp from "sharp";
-import { MAX_PHOTOS, MAX_PREPARED_PHOTO_BYTES, MAX_UPLOAD_BYTES } from "../src/lib/photo-limits";
 
 async function main() {
   const directory = await mkdtemp(join(tmpdir(), "shelfie-photo-browser-"));
-  const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || "/usr/bin/chromium", headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
+  let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
   let server: ReturnType<typeof createServer> | undefined;
   try {
     await build({ stdin: { contents: 'import React from "react"; import {createRoot} from "react-dom/client"; import PhotoCapture from "./src/components/photo-capture"; createRoot(document.getElementById("root")).render(<React.StrictMode><PhotoCapture /></React.StrictMode>);', loader: "tsx", resolveDir: process.cwd() }, bundle: true, platform: "browser", format: "esm", outfile: join(directory, "app.js"), tsconfig: "tsconfig.json" });
@@ -25,184 +24,46 @@ async function main() {
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("Browser test server unavailable");
     const origin = `http://127.0.0.1:${address.port}`;
-    const label = Buffer.from('<svg width="2800" height="2100" xmlns="http://www.w3.org/2000/svg"><rect width="2800" height="2100" fill="white"/><g fill="black" font-size="80"><text x="100" y="200">INGREDIENT LABEL FIXTURE</text><text x="100" y="500">Ingredients: Aqua, Glycerin,</text><text x="100" y="700">Cetyl Alcohol, Sodium Chloride.</text><text x="100" y="1000">End of ingredient list.</text></g></svg>');
-    const jpeg = await sharp(label).withExif({ IFD0: { Artist: "Synthetic browser fixture" } }).jpeg({ quality: 98 }).toBuffer();
-    // Valid JPEG with trailing padding: two originals exceed the hosting limit.
-    const large = Buffer.concat([jpeg, Buffer.alloc(3_000_000)]);
-    assert.ok(large.length * 2 > 4_500_000);
-    const file = (name = "label.jpg") => ({ name, mimeType: "image/jpeg", buffer: large });
-    const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
-    const page = await context.newPage();
-    const pageErrors: string[] = [];
-    page.on("pageerror", error => pageErrors.push(error.message));
-    let scope = "a".repeat(64), revision = 0, saved: { id: string; url: string }[] = [];
-    let mode: "oversize" | "html" | "quality" | "success" = "oversize";
-    let verified = true;
-    let loadError = false;
-    const bodies: { size: number; count: number }[] = [];
-    let reviewShares = 0, reviewDeletes = 0;
-    const reviewReference = randomUUID();
-    await page.route("**/api/photo-reviews", async route => {
-      if (route.request().method() === "DELETE") {
-        assert.equal(JSON.parse(route.request().postData()!).reference, reviewReference);
-        reviewDeletes++; await route.fulfill({ json: { deleted: true } }); return;
-      }
-      reviewShares++;
-      const request = new Request(origin + "/api/photo-reviews", { method: "POST", headers: { "Content-Type": route.request().headers()["content-type"] }, body: new Uint8Array(route.request().postDataBuffer()!) });
-      const form = await request.formData();
-      assert.equal(form.get("reviewConsent"), "photo-review-v1");
-      assert.match(String(form.get("reviewReason")), /too large/);
-      assert.equal(form.getAll("photos").length, 2);
-      await route.fulfill({ json: { reference: reviewReference, expiresAt: Date.now() + 86400000 } });
-    });
-    await page.route("**/api/photos/*", route => route.fulfill({ status: 200, contentType: "image/jpeg", body: jpeg }));
+    browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || "/usr/bin/chromium", headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
+    const page = await browser.newPage({ viewport: { width: 690, height: 829 } });
+    const errors: string[] = [];
+    page.on("pageerror", error => errors.push(error.message));
+    const id = randomUUID(); let saved = false; let reads = 0; let barcodeFound = false;
     await page.route("**/api/photos", async route => {
-      if (!verified) { await route.fulfill({ status: 401, json: { error: "Verify your email before adding photos." } }); return; }
-      if (route.request().method() === "GET") {
-        if (loadError) await route.fulfill({ status: 503, contentType: "text/html", body: "<html>Temporarily unavailable</html>" });
-        else await route.fulfill({ json: { revision, draftKey: scope, photos: saved } });
-        return;
-      }
-      const bytes = route.request().postDataBuffer()!;
-      assert.ok(bytes.length < MAX_UPLOAD_BYTES);
-      const request = new Request(origin + "/api/photos", { method: "POST", headers: { "Content-Type": route.request().headers()["content-type"] }, body: new Uint8Array(bytes) });
-      const form = await request.formData();
-      const files = form.getAll("photos") as File[];
-      for (const uploaded of files) {
-        assert.equal(uploaded.type, "image/jpeg"); assert.ok(uploaded.size <= MAX_PREPARED_PHOTO_BYTES);
-        const metadata = await sharp(Buffer.from(await uploaded.arrayBuffer())).metadata();
-        assert.ok(Math.max(metadata.width!, metadata.height!) <= 2400);
-        assert.equal(metadata.exif, undefined);
-      }
-      bodies.push({ size: bytes.length, count: files.length });
-      if (mode === "oversize") { await route.fulfill({ status: 413, contentType: "text/plain", body: "Request Entity Too Large" }); return; }
-      if (mode === "html") { await route.fulfill({ status: 504, contentType: "text/html", body: "<html>Gateway timeout</html>" }); return; }
-      if (mode === "quality") { await route.fulfill({ status: 422, json: { error: "We couldn’t confirm these photos show the same product. Keep one product’s photos together, or choose Start a different product." } }); return; }
-      const retained: string[] = JSON.parse(String(form.get("existingIds")));
-      saved = [...saved.filter(photo => retained.includes(photo.id)), ...files.map(() => { const id = randomUUID(); return { id, url: `/api/photos/${id}` }; })];
-      revision++;
-      await route.fulfill({ json: { revision, draftKey: scope, photos: saved, message: "Your label photos are checked and saved. Your free report is still available." } });
+      if (route.request().method() === "POST") saved = true;
+      await route.fulfill({ json: { revision: saved ? 1 : 0, draftKey: "a".repeat(64), photos: saved ? [{ id, url: `/api/photos/${id}` }] : [] } });
     });
-    async function ready(target: Page = page) { await target.waitForFunction(() => { const button = document.querySelector<HTMLButtonElement>(".capture-actions button"); return button && !button.disabled; }); }
-    async function count(value: number) { await page.waitForFunction(expected => document.querySelectorAll(".photo-list li").length === expected && !document.querySelector(".capture-actions")?.textContent?.includes("Adding"), value); }
-    async function checkPhotos() { await page.getByRole("button", { name: /^Upload and check (this|these)/ }).click(); }
-    const sources = () => page.locator(".photo-list img").evaluateAll(images => images.map(image => image.getAttribute("src")));
-
-    await page.goto(origin); await ready();
-    await page.locator("#camera-photo").setInputFiles(file("first-angle.jpg")); await count(1); await ready();
-    const first = (await sources())[0];
-    await page.locator("#camera-photo").setInputFiles(file("second-angle.jpg")); await count(2); await ready();
-    assert.equal((await sources())[0], first);
-    console.log("PASS: taking a second photo appends it without replacing the first");
-
-    const beforeTurn = await sources();
-    await page.getByRole("button", { name: "Rotate photo 1", exact: true }).click();
-    await page.waitForFunction(() => document.querySelector(".photo-success")?.textContent?.includes("Photo rotated"));
-    await ready();
-    assert.notEqual((await sources())[0], beforeTurn[0]); assert.equal((await sources())[1], beforeTurn[1]);
-    await page.waitForFunction(() => { const img=document.querySelector<HTMLImageElement>(".photo-list img"); return img && img.naturalHeight>img.naturalWidth; });
-    assert.equal(await page.locator(".photo-list li").count(), 2);
-    console.log("PASS: rotation turns only the selected image without another camera capture or losing other photos");
-
-    await page.reload(); await count(2); await ready();
-    assert.match(await page.locator(".photo-success").innerText(), /unfinished photos are back/);
-    console.log("PASS: both pending photos survive a camera-style page reload");
-    const beforeRetake = await sources();
-    const cancelled = page.waitForEvent("filechooser");
-    await page.getByRole("button", { name: "Retake photo 1", exact: true }).click();
-    await (await cancelled).setFiles([]);
-    assert.deepEqual(await sources(), beforeRetake);
-    const retake = page.waitForEvent("filechooser");
-    await page.getByRole("button", { name: "Retake photo 1", exact: true }).click();
-    await (await retake).setFiles(file("retaken-angle.jpg"));
-    await page.waitForFunction(() => document.querySelector(".photo-success")?.textContent?.includes("Retake added"));
-    await ready();
-    const afterRetake = await sources();
-    assert.notEqual(afterRetake[0], beforeRetake[0]); assert.equal(afterRetake[1], beforeRetake[1]);
-    console.log("PASS: canceling a retake keeps both photos; completing it replaces only the selected photo");
-
-    await checkPhotos();
-    await page.waitForFunction(() => document.querySelector('[role="alert"]')?.textContent?.includes("too large to send together"));
-    assert.equal(await page.locator(".photo-list li").count(), 2);
-    assert.doesNotMatch(await page.locator('[role="alert"]').innerText(), /Unexpected token|JSON/);
-    assert.equal(reviewShares, 0);
-    await page.getByRole("button", { name: "Share photos for review", exact: true }).click();
-    await page.locator(".photo-review-receipt").waitFor();
-    assert.equal(reviewShares, 1);
-    assert.equal(await page.getByRole("button", { name: "Shared for review", exact: true }).isDisabled(), true);
-    assert.equal(await page.locator(".photo-list li").count(), 2);
-    assert.equal(await page.getByRole("button", { name: "Show my free report" }).count(), 0);
-    await page.getByRole("button", { name: "Delete shared copy", exact: true }).click();
-    await page.locator(".photo-review-receipt").waitFor({ state: "detached" });
-    assert.equal(reviewDeletes, 1); assert.equal(await page.locator(".photo-list li").count(), 2);
-    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
-    console.log("PASS: review photos are shared only after an explicit tap; receipt, deletion and mobile layout work without changing the scan");
-    await page.reload(); await count(2); await ready();
-    mode = "html"; await checkPhotos();
-    await page.waitForFunction(() => document.querySelector('[role="alert"]')?.textContent?.includes("Your photos are still here"));
-    assert.equal(await page.locator(".photo-list li").count(), 2);
-    console.log("PASS: plaintext 413 and HTML timeout replies show plain English and preserve the photos");
-
-    await ready();
-    await page.locator("#phone-photos").setInputFiles(Array.from({ length: 4 }, (_, index) => file(`angle-${index + 3}.jpg`)));
-    await count(6);
-    mode = "quality"; await checkPhotos();
-    await page.waitForFunction(() => document.querySelector('[role="alert"]')?.textContent?.includes("same product"));
-    assert.equal(bodies.at(-1)?.count, MAX_PHOTOS);
-    assert.equal(await page.locator(".photo-list li").count(), MAX_PHOTOS);
-    assert.equal(await page.getByRole("button", { name: "Show my free report" }).count(), 0);
-    await page.locator("#phone-photos").setInputFiles(file("one-too-many.jpg"));
-    await page.waitForFunction(() => document.querySelector('[role="alert"]')?.textContent?.includes("six photos"));
-    assert.equal(await page.locator(".photo-list li").count(), MAX_PHOTOS);
-    console.log("PASS: six prepared photos fit the wire limit; quality rejection never discards them or unlocks a report");
-
-    await page.getByRole("button", { name: "Remove photo 6", exact: true }).click(); await count(5); await ready();
-    await page.locator("#phone-photos").setInputFiles({ name: "unreadable.heic", mimeType: "image/heic", buffer: Buffer.from("unreadable fixture") });
-    await page.waitForFunction(() => document.querySelector('[role="alert"]')?.textContent?.includes("couldn’t open"));
-    assert.equal(await page.locator(".photo-list li").count(), 5);
-    await ready(); await page.locator("#phone-photos").setInputFiles(file()); await count(6);
-    mode = "success"; await checkPhotos();
-    await page.getByRole("button", { name: "Show my free report" }).waitFor();
-    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>(".photo-list button")?.disabled);
-    assert.equal((await sources()).every(url => url?.startsWith("/api/photos/")), true);
-    await page.reload();
-    await page.getByRole("button", { name: "Show my free report" }).waitFor();
-    assert.equal(await page.locator(".photo-list li").count(), 6);
-    console.log("PASS: unsupported files preserve other photos; a successful check clears the pending draft and restores saved photos");
-
-    await page.getByRole("button", { name: "Start a different product" }).click(); await count(0); await ready();
-    await page.reload(); await ready();
-    assert.equal(await page.locator(".photo-list li").count(), 0);
-    assert.equal(await page.getByRole("button", { name: "Show my free report" }).count(), 0);
-    await page.locator("#camera-photo").setInputFiles(file()); await count(1); await ready();
-    scope = "b".repeat(64); revision = 0; saved = [];
-    await page.reload(); await ready();
-    assert.equal(await page.locator(".photo-list li").count(), 0);
-    console.log("PASS: starting another product stays cleared after reload; another verified session cannot see the earlier draft");
-
-    await page.locator("#camera-photo").setInputFiles(file()); await count(1); await ready();
-    revision = 1; const freshId = randomUUID(); saved = [{ id: freshId, url: `/api/photos/${freshId}` }];
-    await page.reload(); await ready();
-    assert.deepEqual(await sources(), [`/api/photos/${freshId}`]);
-    const panorama = await sharp({ create: { width: 8000, height: 600, channels: 3, background: "white" } }).jpeg().toBuffer();
-    await page.locator("#phone-photos").setInputFiles({ name: "panorama.jpg", mimeType: "image/jpeg", buffer: panorama });
-    await page.waitForFunction(() => document.querySelector('[role="alert"]')?.textContent?.includes("one section"));
-    assert.deepEqual(await sources(), [`/api/photos/${freshId}`]);
-    verified = false; await page.reload();
-    await page.getByRole("link", { name: "Return to email verification" }).waitFor();
-    assert.equal(await page.locator(".photo-list li").count(), 0);
-    verified = true; loadError = true; await page.reload();
-    await page.waitForFunction(() => document.querySelector('[role="alert"]')?.textContent?.includes("load your saved photos"));
-    assert.equal(await page.locator(".capture-actions button").first().isDisabled(), true);
-    assert.equal(await page.locator(".photo-list li").count(), 0);
-    assert.deepEqual(pageErrors, []);
-    console.log("PASS: stale drafts never replace newer server photos; unverified sessions cannot restore private drafts");
-    console.log("PASS: extreme panoramas keep existing photos; failed initial loads block edits until refresh");
-    console.log(`Photo browser checks passed. Largest tested request: ${Math.max(...bodies.map(body => body.size))} bytes. No email or vision calls were made.`);
-  } finally {
-    await browser.close();
-    if (server) await new Promise<void>(resolve => server!.close(() => resolve()));
-    await rm(directory, { recursive: true, force: true });
-  }
+    const image = await sharp({ create: { width: 1200, height: 1000, channels: 3, background: "white" } }).jpeg().toBuffer();
+    await page.route("**/api/photos/*", route => route.fulfill({ contentType: "image/jpeg", body: image }));
+    await page.route("**/api/ingredients", async route => { reads++; await route.fulfill({ status: 422, json: { error: "We couldn’t read the whole ingredient list. Try another photo. Your free report hasn’t been used." } }); });
+    await page.route("**/api/barcode", async route => {
+      const body = route.request().postDataJSON();
+      assert.equal(body.action, "lookup");
+      await route.fulfill({ json: barcodeFound ? { found: true, lookupId: randomUUID(), product: { barcode: "3560070791460", name: "Fixture cream", brand: "Fixture", ingredientsText: "Aqua, Glycerin", sourceUrl: "https://world.openbeautyfacts.org/product/3560070791460", retrievedAt: new Date().toISOString(), lastModified: null } } : { found: false, message: "Product not found. Photograph the ingredients instead." } });
+    });
+    await page.goto(origin);
+    await page.getByRole("button", { name: "Upload from phone", exact: true }).waitFor();
+    await page.locator("#phone-photos").setInputFiles({ name: "label.jpg", mimeType: "image/jpeg", buffer: image });
+    await page.getByRole("button", { name: "Save this photo", exact: true }).click();
+    await page.getByRole("button", { name: "Show my free report", exact: true }).click();
+    await page.getByRole("alert").waitFor(); assert.equal(reads, 1);
+    assert.equal(await page.locator(".photo-list li").count(), 1);
+    assert.equal(await page.locator("#phone-photos").getAttribute("multiple"), null);
+    await page.getByLabel("Or enter the barcode numbers").fill("3560070791460");
+    await page.getByRole("button", { name: "Find product", exact: true }).click();
+    await page.getByText("Product not found. Photograph the ingredients instead.", { exact: true }).waitFor();
+    barcodeFound = true;
+    await page.getByRole("button", { name: "Find product", exact: true }).click();
+    await page.getByRole("heading", { name: "Fixture cream" }).waitFor();
+    const confirm = page.getByRole("button", { name: "Show my free report for this product" });
+    assert.equal(await confirm.isDisabled(), true);
+    await page.getByRole("checkbox").check(); assert.equal(await confirm.isEnabled(), true);
+    for (const width of [390, 690, 1024]) {
+      await page.setViewportSize({ width, height: 829 });
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), `No horizontal overflow at ${width}`);
+    }
+    assert.deepEqual(errors, []);
+    console.log("PASS: one photo, one read request, retained retry photo, barcode fallback and required confirmation; phone/Fold/desktop widths.");
+  } finally { await browser?.close(); await new Promise<void>(resolve => server ? server.close(() => resolve()) : resolve()); await rm(directory, { recursive: true, force: true }); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

@@ -16,6 +16,12 @@ const same = (left: string[], right: string[]) => JSON.stringify(left) === JSON.
 export function isReportAnalysis(value: unknown): value is ProductAnalysis {
   if (!object(value) || !["complete", "needs_review"].includes(String(value.status)) || !text(value.catalogVersion) || !text(value.rawLabelText)) return false;
   if (!object(value.modes) || typeof value.modes.pregnancy !== "boolean" || typeof value.modes.glp1 !== "boolean" || !texts(value.notes) || !object(value.sources)) return false;
+  if (value.ingredientOrigin !== undefined) {
+    const origin = value.ingredientOrigin;
+    if (!object(origin) || origin.kind !== "barcode" || !object(origin.product)) return false;
+    const p = origin.product;
+    if (typeof p.barcode !== "string" || !/^(?:\d{8}|\d{12}|\d{13}|\d{14})$/.test(p.barcode) || !text(p.name) || typeof p.brand !== "string" || p.ingredientsText !== value.rawLabelText || p.sourceUrl !== `https://world.openbeautyfacts.org/product/${p.barcode}` || typeof p.retrievedAt !== "string" || !Number.isFinite(Date.parse(p.retrievedAt))) return false;
+  }
   const sources = value.sources;
   if (!Object.values(sources).every(source => object(source) && text(source.title) && typeof source.url === "string" && source.url.startsWith("https://"))) return false;
   if (!Array.isArray(value.ingredients) || !value.ingredients.length || value.ingredients.length > 200 || !object(value.alcohols) || !texts(value.alcohols.drying) || !texts(value.alcohols.fatty) || !texts(value.unmatched)) return false;

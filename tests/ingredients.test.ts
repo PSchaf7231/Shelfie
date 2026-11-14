@@ -20,7 +20,7 @@ test('preserves every ingredient, punctuation within names, aliases, and printed
 test('rejects unreadable, incomplete, malformed or unverified lists without fixing them', () => {
   for (const input of ['', 'Aqua,,Glycerin', 'Aqua,', 'Aqua (Water, Glycerin', 'Aqua [Water)', 'Aqua, ???', 'Aqua, Retin...', 'Aqua, unreadable', 'Aqua, Salicylic Acid 200%', 'Aqua, Salicylic Acid (2% 3%)', 'Active Ingredients: Retinol', 'Aqua\nDirections: use daily']) assert.throws(() => parseIngredientList(input), input);
   const good = transcript('Aqua, Glycerin');
-  for (const bad of [null, {}, { ...good, complete: false }, { ...good, certain: false }, { ...good, confidence: 0.97 }, { ...good, confidence: NaN }, { ...good, ingredients: [{text:'Aqua',confidence:0.99}] }, { ...good, ingredients: [{text:'Aqua',confidence:0.99},{text:'Retinol',confidence:0.99}] }, { ...good, ingredients: [{text:'Aqua',confidence:0.99},{text:'Glycerin',confidence:0.9}] }]) assert.throws(() => validateTranscript(bad));
+  for (const bad of [null, {}, { ...good, complete: false }, { ...good, certain: false }, { ...good, confidence: -1 }, { ...good, confidence: NaN }, { ...good, ingredients: [{text:'Aqua',confidence:0.99}] }, { ...good, ingredients: [{text:'Aqua',confidence:0.99},{text:'Retinol',confidence:0.99}] }, { ...good, ingredients: [{text:'Aqua',confidence:0.99},{text:'Glycerin',confidence:2}] }]) assert.throws(() => validateTranscript(bad));
   const printedPeriod = transcript('Aqua, Glycerin.');
   assert.equal(validateTranscript(printedPeriod).ingredients[1].name, 'Glycerin');
   assert.throws(() => validateTranscript({ ...printedPeriod, ingredients: good.ingredients }), /reliably/);

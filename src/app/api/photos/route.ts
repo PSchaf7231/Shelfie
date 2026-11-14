@@ -2,7 +2,7 @@ import type { NextRequest } from "next/server";
 import { createHash } from "node:crypto";
 import { IntakeError, intakeStore } from "@/lib/intake";
 import { failure, reply, sameOrigin, SESSION_COOKIE } from "@/lib/intake-http";
-import { checkLabelQuality, preparePhoto, type PreparedPhoto } from "@/lib/photo-quality";
+import { preparePhoto, type PreparedPhoto } from "@/lib/photo-quality";
 import { photoForm } from "@/lib/photo-upload";
 
 export const runtime = "nodejs";
@@ -12,7 +12,7 @@ function describe(batch: Awaited<ReturnType<ReturnType<typeof intakeStore>["phot
   // Domain-separated identifier for this verified browser's local photo draft.
   // It is not an authentication token and cannot be used to retrieve server data.
   const draftKey = createHash("sha256").update(`shelfie-photo-draft:${token}`).digest("hex");
-  return { revision: batch.revision, draftKey, photos: batch.photos.map(photo => ({ id: photo.id, width: photo.width, height: photo.height, url: `/api/photos/${photo.id}` })) };
+  return { revision: batch.revision, ingredientOrigin: batch.ingredientOrigin, draftKey, photos: batch.photos.map(photo => ({ id: photo.id, width: photo.width, height: photo.height, url: `/api/photos/${photo.id}` })) };
 }
 export async function GET(request: NextRequest) {
   try {
@@ -49,9 +49,9 @@ export async function POST(request: NextRequest) {
         throw error;
       }
     }
-    await checkLabelQuality(images);
+    if (images.length !== 1) throw new IntakeError("Use one photo showing the whole ingredient list.", 422);
     // Recheck eligibility and revision inside the save transaction after async work.
-    return reply({ ...describe(await store.savePhotos(token, revision, images), token), message: "We can read these label photos, and they’re saved. Your free report is still available." });
+    return reply({ ...describe(await store.savePhotos(token, revision, images), token), message: "Your photos are saved and ready to read. Your free report is still available." });
   } catch (error) { return failure(error); }
   finally { if (admitted) activeUploads--; }
 }

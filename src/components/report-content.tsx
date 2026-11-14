@@ -24,7 +24,12 @@ export default function ReportContent({ report }: { report: CompletedReport }) {
     <header className="report-intro">
       <p className="report-eyebrow">Your free first report</p>
       <h1>Your shelf, explained.</h1>
-      <p className="form-intro">One product. {analysis.ingredients.length} ingredients, in the order printed on your label.</p>
+      <p className="form-intro">One product. {analysis.ingredients.length} ingredients, in the order of the ingredient list.</p>
+      {analysis.ingredientOrigin?.kind === "barcode" ? <div className="review-notice">
+        <h2>{analysis.ingredientOrigin.product.name}</h2>
+        <p>Ingredients from <a href={analysis.ingredientOrigin.product.sourceUrl} target="_blank" rel="noopener noreferrer">Open Beauty Facts contributors</a>, confirmed against your package by you. Database formulas may change.</p>
+        <p className="form-help">Retrieved {new Date(analysis.ingredientOrigin.product.retrievedAt).toLocaleDateString("en-US")}. Data under the <a href="https://opendatacommons.org/licenses/odbl/1-0/">Open Database License</a>.</p>
+      </div> : <p className="form-help">Ingredients read from your label photo. Automated reading can make mistakes; check the names against your package.</p>}
       <p className="report-disclaimer">{REPORT_DISCLAIMER}</p>
       {analysis.unmatched.length > 0 && <div className="review-notice">
         <h2>Some ingredients need review.</h2>

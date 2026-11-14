@@ -24,7 +24,7 @@ async function main() {
       const port = await freePort();
       const user = "shelfie_test";
       const password = randomBytes(24).toString("hex");
-      cluster = new EmbeddedPostgres({ databaseDir: join(directory, "cluster"), user, password, port, persistent: false, authMethod: "scram-sha-256", postgresFlags: ["-h", "127.0.0.1"], onLog: () => {}, onError: () => {} });
+      cluster = new EmbeddedPostgres({ databaseDir: join(directory, "cluster"), user, password, port, persistent: false, authMethod: "scram-sha-256", postgresFlags: ["-h", "127.0.0.1", "-c", "unix_socket_directories="], onLog: () => {}, onError: () => {} });
       await cluster.initialise(); await cluster.start();
       const url = new URL(`postgresql://127.0.0.1:${port}/postgres`);
       url.username = user; url.password = password;

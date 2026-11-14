@@ -1,3 +1,4 @@
+import type { IngredientOrigin } from "../barcode";
 import { CATALOG_VERSION, findIngredient, normalizeName, sources, type IngredientRecord, type SourceId } from './catalog';
 import { validateTranscript, type ParsedIngredient } from './parser';
 import { skinProfile, type SkinProfile } from '../skin-profile';
@@ -39,11 +40,12 @@ function explain(item: ParsedIngredient, modes: Modes): IngredientAnalysis {
     alcoholBucket: record.alcohol, role: record.role, flags, sources: record.sources,
   };
 }
-export function analyzeIngredients(value: unknown, modes: Modes, profile?: SkinProfile) {
+export function analyzeIngredients(value: unknown, modes: Modes, profile?: SkinProfile, origin?: IngredientOrigin) {
   const { transcript, ingredients: parsed } = validateTranscript(value);
   const ingredients = parsed.map(item => explain(item, modes));
   const unmatched = ingredients.filter(item => item.match === 'unmatched').map(item => item.labelName);
   return {
+    ...(origin ? { ingredientOrigin: origin } : {}),
     status: unmatched.length ? 'needs_review' as const : 'complete' as const,
     catalogVersion: CATALOG_VERSION, rawLabelText: transcript.rawText, modes,
     ingredients,
