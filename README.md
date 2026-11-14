@@ -75,47 +75,49 @@ under a unique email constraint. Intake, verification, failed reads, and retakes
 never consume a report. Clients cannot supply report content or completion state.
 
 
-## Photo capture and quality checks
-`/scan` is gated on the server by email verification and free-report eligibility.
-The camera button uses the phone's rear-camera file picker when supported;
-the upload button supports multiple existing photos. Desktop browsers may use
-an ordinary file picker for both. One batch covers one product, up to six photos.
-The browser prepares each image as a metadata-free JPEG with a maximum edge of
-2400 pixels and a 600,000-byte budget, keeping six photos below the 4,000,000-byte
-total upload limit, including multipart metadata. It opens source images up to
-20 MiB and asks for a closer shot if the image cannot fit without further loss
-of label detail. Server decoding and vision checks remain mandatory.
-For curved or long labels, include overlapping sections with the printed
-beginning and end visible. Adding an angle keeps earlier photos; Retake replaces
-only the chosen photo after its replacement is ready. Canceling keeps the original.
-Removal stages changes until the next successful check.
+## Barcode lookup and single-photo capture
+`/scan` offers two options: Open Beauty Facts barcode lookup, or one photo of
+one product’s complete ingredient list. Barcode lookup uses the free keyless
+`https://world.openbeautyfacts.org/api/v3/product/{EAN-or-UPC}.json` endpoint.
+It validates check digits and the returned product code. Missing products,
+missing or unusable ingredient lists, and provider outages offer the photo
+fallback without consuming credit. Camera scanning uses native BarcodeDetector
+when available; typed barcode entry remains available in other browsers.
 
-Pending prepared photos are kept in this browser's IndexedDB for up to 24 hours,
-scoped to an opaque identifier for the verified browser session. Reload restores
-them only after server authorization and only if their base photo revision still
-matches. Expired drafts are removed on subsequent draft access; successful checks
-clear the pending draft. A different session cannot restore the previous draft.
-Storage failure leaves photos usable in memory and asks the user to keep the page
-open. Upload failures retain the selection and use plain-language messages even
-when the hosting platform returns a non-JSON error page.
+Lookup results show name, brand and the full ingredient text for the user to
+confirm against their exact package and variant. Database data can be outdated.
+Only a confirmed, server-stored result can create a draft; client-written
+ingredient lists are never accepted. The confirmation is scoped to the verified
+session, expires after ten minutes, and uses the current product revision to
+prevent another tab overwriting a selection. Reports retain product source,
+retrieval time, Open Beauty Facts contributor attribution and an ODbL link.
+The lookup never uploads user photos or contributes products to a public database.
+No bulk product database is created. Before launch, verify real product coverage
+and complete the provider’s API-use registration and reuse requirements.
 
-Uploads are authorized before reading bytes. Sharp verifies and decodes supported
-still images, enforces a 24-megapixel input limit, removes metadata, and rejects
-obvious darkness, blur, or inadequate resolution. A mandatory OpenAI vision check
-then reviews each photo for readability, glare, cropped text, confidence, product
-consistency, and complete coverage across the batch. Partial photos are accepted
-only when intact overlapping text establishes complete coverage. Pixel metrics
-alone never authorize acceptance. Uncertain or malformed verdicts, service failures,
-and absent credentials fail closed. Rejected images are not saved on the server;
-the browser retains its pending selection so it can be corrected and retried.
+Apply migration `004_barcode_lookup` with `npm run db:migrate` before deploying
+this version. It adds barcode-origin metadata and short-lived lookup storage;
+existing photos and completed reports are preserved. New photo submissions and
+label readings accept exactly one photo. Legacy multi-photo batches remain in
+storage, but the scan UI requires saving a single complete-label photo again.
 
-Set `LABEL_READER_API_KEY` securely for OpenAI's API. Literal ingredient
-transcription defaults to `gpt-4.1` for more reliable character-for-character
-reads; photo-quality screening defaults to `gpt-4.1-mini`. Both support vision
-and strict JSON schemas. `LABEL_READER_MODEL` optionally overrides both stages. Allow HTTPS to
-`api.openai.com`. Submitted photos go to that provider for quality review and
-literal ingredient transcription. Product scoring is not built.
-The automated tests use provider fixtures, not live model calls.
+The browser prepares a metadata-free JPEG (maximum edge 2400 pixels, 600,000-byte
+budget). Sharp decodes it, strips metadata, bounds resolution and rejects obvious
+darkness or blur. Saving does not call the vision provider or promise readability.
+A single OpenAI request reads the saved ingredient photo when the user requests
+a report. There is no separate AI quality reviewer, second transcription, or 98%
+confidence cutoff. Incomplete or explicitly uncertain text still asks for a retake
+instead of guessing. The screen and report explain that automated reading can
+make mistakes. Uncertain ingredient explanations remain explicitly unknown.
+
+Set `LABEL_READER_API_KEY` securely; `LABEL_READER_MODEL` optionally overrides the
+`gpt-4.1` default. No barcode key is needed. Provider tests use fixtures, not live
+vision calls. Successful lookup, photo saving and failed readings never consume
+credit; only the existing completed-report transaction does.
+
+Prepared photos remain in the browser’s session-scoped IndexedDB draft for up to
+24 hours. Retake replaces the single selected photo, cancellation preserves it,
+and upload failures leave it available. Errors appear near the top of the screen.
 
 Rejected checks offer an optional **Share photos for review** button. The button
 clearly requests permission to share the selected label photos and error with the
@@ -151,13 +153,11 @@ preferences cannot be supplied by the client; both modes come from the stored
 session. The scan screen's “Show my free report” button reads the ingredients and
 then opens `/report`. If reading fails, it stays on the photo screen for a retake.
 
-Two independent OpenAI transcriptions must agree on every ingredient. Both reads
-must mark the list complete and certain, with confidence of at least 0.98 for the
-whole list and every entry. Server parsing preserves printed order and names,
-checks that each parsed entry matches the transcription, and rejects malformed
-separators, ambiguous percentages, missing sections, and unreadable text. Model
-confidence is a quality signal, not proof of accuracy; disagreement or uncertainty
-asks for clearer photos rather than selecting a plausible reading.
+One OpenAI transcription must mark the list complete and readable without guessed
+ingredient names. Numeric confidence is retained only as bounded provider
+metadata, not a calibrated accuracy threshold. Server parsing preserves names,
+order and printed percentages and checks the structured entries against the
+transcribed text. Unknown names never receive invented explanations.
 
 The versioned, finite catalog in `src/lib/ingredients/catalog.ts` uses exact names
 and explicit aliases only. It is not an exhaustive database or a clinically
@@ -180,9 +180,9 @@ plain-language line; all output is cosmetic information only.
 Analysis is saved as an unfinished draft, keyed by photo revision, catalog version,
 and server preferences. A repeat request reuses the draft. Successful photo
 replacement invalidates it; failed retakes preserve it. Final save rechecks
-eligibility and revision after the provider calls. Drafts expire with their photos
-and never consume the free report. The automated tests cover parsing, independent
-reads, mode rules, authorization, caching, concurrent replacement, and entitlement.
+eligibility and revision after the provider call. Drafts expire with their product selection
+and never consume the free report. The automated tests cover parsing, a single
+reading, barcode confirmation, mode rules, authorization, caching, concurrent replacement, and entitlement.
 
 ## Report screen and free-report completion
 `/report` requires a verified session. Its page GET is read-only: it displays the

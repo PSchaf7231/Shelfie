@@ -22,7 +22,7 @@ export async function readPhotoResponse(response: Response, fallback: string): P
 export function photoBatchResponse(data: unknown, fallback: string): PhotoBatch {
   const batch = data as PhotoBatch | null;
   if (!batch || !Number.isSafeInteger(batch.revision) || batch.revision < 0 || !/^[a-f0-9]{64}$/.test(batch.draftKey)
-    || !Array.isArray(batch.photos) || batch.photos.length > MAX_PHOTOS
+    || !Array.isArray(batch.photos) || batch.photos.length > 6
     || batch.photos.some(photo => !photo || typeof photo.id !== "string" || !/^[a-f0-9-]{36}$/.test(photo.id) || photo.url !== `/api/photos/${photo.id}`)
     || new Set(batch.photos.map(photo => photo.id)).size !== batch.photos.length) throw new PhotoClientError(fallback);
   return { revision: batch.revision, draftKey: batch.draftKey, photos: batch.photos.map(photo => ({ id: photo.id, url: photo.url })),
@@ -35,7 +35,7 @@ export function addLabelPhotos(current: Photo[], incoming: Photo[], replaceId?: 
     if (index < 0 || incoming.length !== 1) throw new PhotoClientError("Choose the photo you want to retake again.");
     return current.map((photo, position) => position === index ? incoming[0] : photo);
   }
-  if (current.length + incoming.length > MAX_PHOTOS) throw new PhotoClientError("Use up to six photos of the same product. Remove a photo before adding more.");
+  if (current.length + incoming.length > MAX_PHOTOS) throw new PhotoClientError("Use one photo of the whole ingredient list. Retake or remove it before choosing another.");
   return [...current, ...incoming];
 }
 
@@ -55,7 +55,7 @@ export async function preparePhotoForUpload(file: File, turnClockwise = false, a
     const width = Math.round(image.naturalWidth * scale), height = Math.round(image.naturalHeight * scale);
     canvas.width = turnClockwise ? height : width;
     canvas.height = turnClockwise ? width : height;
-    if (!allowSmall && Math.min(canvas.width, canvas.height) < 480) throw new PhotoClientError("Take a closer photo of one section of the ingredient list. Add overlapping photos for a long label.");
+    if (!allowSmall && Math.min(canvas.width, canvas.height) < 480) throw new PhotoClientError("Take a higher-resolution photo of the whole ingredient list, or try the barcode.");
     const context = canvas.getContext("2d", { alpha: false });
     if (!context) throw new PhotoClientError("Your phone couldn’t prepare this photo. Please try another photo.");
     context.fillStyle = "#ffffff";

@@ -1,4 +1,6 @@
 import { createHash, randomBytes, randomInt, randomUUID, timingSafeEqual } from "node:crypto";
+import { barcodeTranscript, lookupOwner, type BarcodeProduct, type IngredientOrigin } from "./barcode";
+import { analyzeIngredients } from "./ingredients/analyze";
 import type { ProductAnalysis } from "./ingredients/analyze";
 import { isReportAnalysis, type CompletedReport } from "./report";
 import { IntakeError } from "./errors";
@@ -103,9 +105,9 @@ export class IntakeStore {
   private async photoBatchOn(database: Queryable, token: string, now: number) {
     const { email } = await this.requireEligibleOn(database, token, now);
     await this.prunePhotos(database, email, now);
-    const batch = (await database.query<{ revision: number }>("SELECT revision FROM photo_batches WHERE email = $1", [email])).rows[0];
+    const batch = (await database.query<{ revision: number; ingredient_origin: IngredientOrigin | null }>("SELECT revision, ingredient_origin FROM photo_batches WHERE email = $1", [email])).rows[0];
     const photos = (await database.query<StoredPhoto>("SELECT id, bytes, width, height FROM photos WHERE email = $1 ORDER BY position", [email])).rows;
-    return { revision: batch?.revision ?? 0, photos: photos.map(photo => ({ ...photo, bytes: Buffer.from(photo.bytes) })) };
+    return { revision: batch?.revision ?? 0, ingredientOrigin: batch?.ingredient_origin ?? null, photos: photos.map(photo => ({ ...photo, bytes: Buffer.from(photo.bytes) })) };
   }
   async photoBatch(token: string, now = Date.now()) {
     return this.database.transaction(async database => { await this.lockEmail(database, token, now); return this.photoBatchOn(database, token, now); });
@@ -129,7 +131,7 @@ export class IntakeStore {
       if (current.revision !== revision) throw new IntakeError("Your photos changed in another tab. Refresh before trying again.", 409);
       await database.query("DELETE FROM photos WHERE email = $1", [email]);
       await database.query("DELETE FROM ingredient_drafts WHERE email = $1", [email]);
-      await database.query("INSERT INTO photo_batches (email, revision, expires) VALUES ($1, $2, $3) ON CONFLICT(email) DO UPDATE SET revision = excluded.revision, expires = excluded.expires", [email, revision + 1, now + 86400000]);
+      await database.query("INSERT INTO photo_batches (email, revision, expires) VALUES ($1, $2, $3) ON CONFLICT(email) DO UPDATE SET revision = excluded.revision, expires = excluded.expires, ingredient_origin = NULL", [email, revision + 1, now + 86400000]);
       for (let position = 0; position < images.length; position++) {
         const image = images[position];
         await database.query("INSERT INTO photos (id, email, bytes, width, height, position) VALUES ($1, $2, $3, $4, $5, $6)", [randomUUID(), email, image.bytes, image.width, image.height, position]);
@@ -166,7 +168,7 @@ export class IntakeStore {
   private async ingredientAnalysisOn(database: Queryable, token: string, revision: number, catalogVersion: string, now: number): Promise<ProductAnalysis | null> {
     const session = await this.requireEligibleOn(database, token, now);
     const batch = await this.photoBatchOn(database, token, now);
-    if (!batch.photos.length || batch.revision !== revision) throw new IntakeError("Your label photos changed or expired. Please check them again.", 409);
+    if ((!batch.photos.length && !batch.ingredientOrigin) || batch.revision !== revision) throw new IntakeError("Your label photos changed or expired. Please check them again.", 409);
     const modes = JSON.stringify({ pregnancy: session.pregnancy, glp1: session.glp1 });
     const row = (await database.query<{ content: ProductAnalysis }>(`SELECT content FROM ingredient_drafts WHERE email = $1 AND revision = $2 AND modes = $3::jsonb AND catalog_version = $4 AND COALESCE(content->'skinProfile', '{"type":"","concerns":[],"note":""}'::jsonb) = $5::jsonb`, [session.email, revision, modes, catalogVersion, JSON.stringify(session.skinProfile)])).rows[0];
     return row?.content ?? null;
@@ -179,10 +181,37 @@ export class IntakeStore {
       await this.lockEmail(database, token, now);
       const session = await this.requireEligibleOn(database, token, now);
       const batch = await this.photoBatchOn(database, token, now);
-      if (!batch.photos.length || batch.revision !== revision) throw new IntakeError("Your label photos changed while they were being read. Please try again.", 409);
+      if ((!batch.photos.length && !batch.ingredientOrigin) || batch.revision !== revision) throw new IntakeError("Your label photos changed while they were being read. Please try again.", 409);
       if (analysis.modes.pregnancy !== session.pregnancy || analysis.modes.glp1 !== session.glp1) throw new IntakeError("Your report preferences changed. Please try again.", 409);
       if (JSON.stringify(skinProfile(analysis.skinProfile)) !== JSON.stringify(session.skinProfile)) throw new IntakeError("Your skin profile changed. Please read the label again.", 409);
       await database.query("INSERT INTO ingredient_drafts (email, revision, modes, catalog_version, content) VALUES ($1, $2, $3::jsonb, $4, $5::jsonb) ON CONFLICT(email) DO UPDATE SET revision = excluded.revision, modes = excluded.modes, catalog_version = excluded.catalog_version, content = excluded.content", [session.email, revision, JSON.stringify(analysis.modes), analysis.catalogVersion, JSON.stringify(analysis)]);
+    });
+  }
+  async saveBarcodeLookup(token: string, product: BarcodeProduct, now = Date.now()) {
+    return this.database.transaction(async database => {
+      await this.lockEmail(database, token, now);
+      await this.requireEligibleOn(database, token, now);
+      await database.query("DELETE FROM barcode_lookups WHERE expires <= $1 OR owner_hash = $2", [now, lookupOwner(token)]);
+      const id = randomUUID();
+      await database.query("INSERT INTO barcode_lookups (id, owner_hash, product, expires) VALUES ($1,$2,$3::jsonb,$4)", [id, lookupOwner(token), JSON.stringify(product), now + 600000]);
+      return id;
+    });
+  }
+  async useBarcodeLookup(token: string, id: string, revision: number, now = Date.now()) {
+    return this.database.transaction(async database => {
+      await this.lockEmail(database, token, now);
+      const session = await this.requireEligibleOn(database, token, now);
+      const current = await this.photoBatchOn(database, token, now);
+      if (current.revision !== revision) throw new IntakeError("Your product changed in another tab. Refresh before trying again.", 409);
+      const row = (await database.query<{ product: BarcodeProduct }>("SELECT product FROM barcode_lookups WHERE id=$1 AND owner_hash=$2 AND expires>$3", [id, lookupOwner(token), now])).rows[0];
+      if (!row) throw new IntakeError("This barcode result expired. Look up the product again; your free report is unchanged.", 409);
+      const origin: IngredientOrigin = { kind: "barcode", product: row.product };
+      const analysis = analyzeIngredients(barcodeTranscript(row.product), { pregnancy: session.pregnancy, glp1: session.glp1 }, session.skinProfile, origin);
+      await database.query("DELETE FROM photos WHERE email=$1", [session.email]);
+      await database.query("INSERT INTO photo_batches (email,revision,expires,ingredient_origin) VALUES ($1,$2,$3,$4::jsonb) ON CONFLICT(email) DO UPDATE SET revision=excluded.revision, expires=excluded.expires, ingredient_origin=excluded.ingredient_origin", [session.email,revision+1,now+86400000,JSON.stringify(origin)]);
+      await database.query("INSERT INTO ingredient_drafts (email,revision,modes,catalog_version,content) VALUES ($1,$2,$3::jsonb,$4,$5::jsonb) ON CONFLICT(email) DO UPDATE SET revision=excluded.revision,modes=excluded.modes,catalog_version=excluded.catalog_version,content=excluded.content", [session.email,revision+1,JSON.stringify(analysis.modes),analysis.catalogVersion,JSON.stringify(analysis)]);
+      await database.query("DELETE FROM barcode_lookups WHERE id=$1", [id]);
+      return { revision: revision+1 };
     });
   }
   private async getReportOn(database: Queryable, token: string, now: number): Promise<CompletedReport | null> {

@@ -1,4 +1,4 @@
-import { IntakeError } from "../intake";
+import { IntakeError } from "../errors";
 
 export class LabelReadError extends IntakeError {
   constructor(message = "We couldn’t read every ingredient reliably. Please provide a clearer photo of the whole list; we won’t guess.") { super(message, 422); }
@@ -59,12 +59,12 @@ export function parseIngredientList(rawText: string): ParsedIngredient[] {
 export type LabelTranscript = { rawText: string; complete: boolean; certain: boolean; confidence: number; ingredients: { text: string; confidence: number }[] };
 export function validateTranscript(value: unknown): { transcript: LabelTranscript; ingredients: ParsedIngredient[] } {
   const data = value as LabelTranscript | null;
-  if (!data || typeof data.rawText !== "string" || data.complete !== true || data.certain !== true || !Number.isFinite(data.confidence) || data.confidence < 0.98 || data.confidence > 1 || !Array.isArray(data.ingredients)) throw new LabelReadError();
+  if (!data || typeof data.rawText !== "string" || data.complete !== true || data.certain !== true || !Number.isFinite(data.confidence) || data.confidence < 0 || data.confidence > 1 || !Array.isArray(data.ingredients)) throw new LabelReadError();
   const ingredients = parseIngredientList(data.rawText);
   if (data.ingredients.length !== ingredients.length) throw new LabelReadError();
   for (let i = 0; i < ingredients.length; i++) {
     const item = data.ingredients[i];
-    if (!item || typeof item.text !== "string" || !Number.isFinite(item.confidence) || item.confidence < 0.98 || item.confidence > 1 || literal(item.text) !== literal(ingredients[i].raw)) throw new LabelReadError();
+    if (!item || typeof item.text !== "string" || !Number.isFinite(item.confidence) || item.confidence < 0 || item.confidence > 1 || literal(item.text) !== literal(ingredients[i].raw)) throw new LabelReadError();
   }
   return { transcript: data, ingredients };
 }
